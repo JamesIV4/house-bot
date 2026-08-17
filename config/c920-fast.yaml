@@ -1,0 +1,4 @@
+inherit: "config/base.yaml"
+
+dataset:
+  subsample: 2

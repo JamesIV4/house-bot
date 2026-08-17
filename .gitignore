@@ -1,0 +1,48 @@
+# ROS / colcon
+build/
+install/
+log/
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*~
+*:Zone.Identifier
+
+# Secrets and machine-local configuration
+.env
+.env.*
+!.env.example
+secrets/
+config/local/
+
+# Large or generated robotics data
+bags/
+*.db3
+*.mcap
+models/
+weights/
+maps/generated/
+artifacts/
+tmp/
+
+# SLAM workspaces and data
+external/
+envs/
+.tools/
+.mamba/
+checkpoints/
+data/input/
+data/output/
+*.mp4
+*.mov
+*.mkv
