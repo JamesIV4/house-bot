@@ -37,6 +37,10 @@ other preliminary work before SLAM unless a direct SLAM blocker requires it.
 
 ## Current implementation target
 
-MASt3R-SLAM running on the RTX 5060 Ti in WSL. The GPU is Blackwell compute
-capability 12.0, so the environment and CUDA extensions must support `sm_120`.
-Use the WSL-compatible upstream branch behavior and current PyTorch/CUDA APIs.
+The measured fixed-focus C920 calibration and 1,000-pose live Pi route have
+passed. Identify the base motor driver and encoders, rigidly mount and measure
+the C920-to-base transform, then repeat the calibrated
+`config/dpvo-navigation.yaml` route from a natural starting scene. Preserve
+tuned MASt3R-SLAM as the dense mapping baseline, including the Blackwell,
+live-stream, pointmap-downsample, and 2 Hz WSL viewer patches. Monocular pose is
+not metric until wheel motion or another scale observation is integrated.

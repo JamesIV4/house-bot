@@ -1,0 +1,24 @@
+# These coordinates match the generated mock map. Replace them with poses from
+# the real saved map after the first metric mapping run.
+destinations:
+  Home:
+    x: 0.0
+    y: 0.0
+    yaw: 0.0
+    description: Mock starting pose
+  Kitchen:
+    x: 2.6
+    y: 0.0
+    yaw: 1.5708
+    description: Mock east room
+  Office:
+    x: -2.0
+    y: 1.8
+    yaw: 3.1416
+    description: Mock northwest room
+  Lounge:
+    x: 2.5
+    y: 1.8
+    yaw: 3.1416
+    description: Mock northeast room
+

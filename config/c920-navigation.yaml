@@ -1,0 +1,16 @@
+inherit: "config/base.yaml"
+
+# The network still receives MASt3R's native 512-pixel-long-edge image. This
+# downsamples its dense pointmaps for tracking, optimization, visualization,
+# and saved reconstruction, cutting those workloads to one quarter.
+dataset:
+  subsample: 2
+  img_downsample: 2
+
+# The dense viewer is diagnostic UI, not part of the robot control loop. Two
+# full-map refreshes per second keep it useful without repeatedly redrawing
+# millions of points on the GPU used by SLAM.
+visualization:
+  max_fps: 2
+  show_all: true
+  show_curr_pointmap: true

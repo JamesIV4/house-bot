@@ -1,0 +1,100 @@
+{
+  "navbar": [
+    {"type": "settings", "id": "settings_default"},
+    {"type": "rosbridge", "id": "rosbridge_default"},
+    {"type": "grid", "id": "grid_default"},
+    {"type": "tf", "id": "tf_default"},
+    {"type": "map", "id": "map_default"},
+    {"type": "odom", "id": "odom_default"},
+    {"type": "path", "id": "path_default"},
+    {"type": "simplegoal", "id": "goal_default"},
+    {"type": "waypoints", "id": "waypoints_default"},
+    {"type": "button", "id": "go_home"},
+    {"type": "button", "id": "go_kitchen"},
+    {"type": "button", "id": "go_office"},
+    {"type": "button", "id": "go_lounge"},
+    {"type": "button", "id": "cancel_navigation"},
+    {"type": "inspector", "id": "navigation_status"}
+  ],
+  "view": {
+    "center": {"x": 0, "y": 0},
+    "scale": 90
+  },
+  "grid_default": {
+    "size": 1.0,
+    "thickness": 1,
+    "colour": "#3e556a",
+    "colour_sub": "#294056",
+    "autoscale": "Coarse",
+    "subdivisions": 2,
+    "frame": "map"
+  },
+  "tf_default": {
+    "show_names": false,
+    "show_axes": true,
+    "show_lines": true,
+    "scale": 1.0,
+    "frame_visibility": {}
+  },
+  "map_default": {
+    "topic": "/map",
+    "opacity": "1.0",
+    "colour_scheme": 0,
+    "throttle": "500",
+    "use_timestamp": false
+  },
+  "odom_default": {
+    "topic": "/odom (Odometry)",
+    "history": "500",
+    "color": "#54db67",
+    "throttle": "100",
+    "draw_arrows": true,
+    "draw_path": true,
+    "save_history": false
+  },
+  "path_default": {
+    "topic": "/plan",
+    "color": "#ffd166",
+    "throttle": "100",
+    "opacity": "1.0"
+  },
+  "goal_default": {"topic": "/goal_pose"},
+  "waypoints_default": {
+    "topic": "/waypoints",
+    "topic_type": "geometry_msgs/msg/PoseArray",
+    "fixed_frame": "map",
+    "base_link_frame": "base_link",
+    "points": [],
+    "start_closest": false,
+    "margin": "0.8"
+  },
+  "go_home": {
+    "topic": "/house_bot/go/home",
+    "text": "HOME",
+    "typedict": {"/house_bot/go/home": "std_srvs/srv/Trigger"}
+  },
+  "go_kitchen": {
+    "topic": "/house_bot/go/kitchen",
+    "text": "KITCHEN",
+    "typedict": {"/house_bot/go/kitchen": "std_srvs/srv/Trigger"}
+  },
+  "go_office": {
+    "topic": "/house_bot/go/office",
+    "text": "OFFICE",
+    "typedict": {"/house_bot/go/office": "std_srvs/srv/Trigger"}
+  },
+  "go_lounge": {
+    "topic": "/house_bot/go/lounge",
+    "text": "LOUNGE",
+    "typedict": {"/house_bot/go/lounge": "std_srvs/srv/Trigger"}
+  },
+  "cancel_navigation": {
+    "topic": "/house_bot/cancel_navigation",
+    "text": "CANCEL",
+    "typedict": {"/house_bot/cancel_navigation": "std_srvs/srv/Trigger"}
+  },
+  "navigation_status": {
+    "topic": "/house_bot/navigation_status",
+    "throttle": "250"
+  }
+}

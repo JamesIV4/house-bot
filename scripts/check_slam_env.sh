@@ -14,8 +14,12 @@ export LD_LIBRARY_PATH="$CUDA_TARGET/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export TORCH_CUDA_ARCH_LIST="12.0"
 
 "$ENV_PREFIX/bin/python" - <<'PY'
+import ctypes
+
+import av
 import torch
 
+print(f"pyav={av.__version__}")
 print(f"torch={torch.__version__}")
 print(f"torch_cuda={torch.version.cuda}")
 print(f"cuda_available={torch.cuda.is_available()}")
@@ -38,6 +42,10 @@ print(f"lietorch_extras={lietorch_extras.__file__}")
 
 import curope
 print(f"curope={curope.__file__}")
+
+ctypes.CDLL("libGL.so")
+ctypes.CDLL("libEGL.so")
+print("opengl_loaders=ok")
 PY
 
 git -C "$UPSTREAM_DIR" status --short --branch

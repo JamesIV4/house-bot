@@ -1,0 +1,363 @@
+diff --git a/main.py b/main.py
+index 7004a4c..a4f5457 100644
+--- a/main.py
++++ b/main.py
+@@ -2,6 +2,7 @@ import argparse
+ import datetime
+ import pathlib
+ import sys
++import threading
+ import time
+ import cv2
+ import lietorch
+@@ -145,6 +146,7 @@ if __name__ == "__main__":
+     parser.add_argument("--save-as", default="default")
+     parser.add_argument("--no-viz", action="store_true")
+     parser.add_argument("--calib", default="")
++    parser.add_argument("--max-frames", type=int, default=0)
+ 
+     args = parser.parse_args()
+ 
+@@ -176,7 +178,7 @@ if __name__ == "__main__":
+     states = SharedStates(manager, h, w)
+ 
+     if not args.no_viz:
+-        viz = mp.Process(
++        viz = threading.Thread(
+             target=run_visualization,
+             args=(config, states, keyframes, main2viz, viz2main),
+         )
+@@ -235,7 +237,7 @@ if __name__ == "__main__":
+         if not last_msg.is_paused:
+             states.unpause()
+ 
+-        if i == len(dataset):
++        if i == len(dataset) or (args.max_frames > 0 and i >= args.max_frames):
+             states.set_mode(Mode.TERMINATED)
+             break
+ 
+diff --git a/mast3r_slam/dataloader.py b/mast3r_slam/dataloader.py
+index 35e6f9d..4302358 100644
+--- a/mast3r_slam/dataloader.py
++++ b/mast3r_slam/dataloader.py
+@@ -1,10 +1,22 @@
+ import pathlib
+ import re
++import socket
++import threading
++import time
++from urllib.parse import parse_qs, urlparse
++
++try:
++    import av
++except ImportError:
++    av = None
+ import cv2
+ from natsort import natsorted
+ import numpy as np
+ import torch
+-import pyrealsense2 as rs
++try:
++    import pyrealsense2 as rs
++except (ImportError, OSError):
++    rs = None
+ import yaml
+ 
+ from mast3r_slam.mast3r_utils import resize_img
+@@ -150,6 +162,8 @@ class SevenScenesDataset(MonocularDataset):
+ 
+ class RealsenseDataset(MonocularDataset):
+     def __init__(self):
++        if rs is None:
++            raise RuntimeError("RealSense support is unavailable in this environment")
+         super().__init__()
+         self.dataset_path = None
+         self.pipeline = rs.pipeline()
+@@ -228,6 +242,117 @@ class Webcam(MonocularDataset):
+         return img
+ 
+ 
++class TCPStreamDataset(MonocularDataset):
++    def __init__(self, stream_uri):
++        super().__init__()
++        if av is None:
++            raise RuntimeError("PyAV is required for TCP live streams")
++
++        parsed = urlparse(stream_uri)
++        if parsed.scheme not in ("tcp-listen", "tcp-connect") or parsed.port is None:
++            raise ValueError(
++                "TCP stream URI must use tcp-listen:// or tcp-connect://"
++            )
++
++        self.dataset_path = pathlib.Path("c920-live")
++        self.stream_uri = stream_uri
++        self.use_calibration = False
++        self.save_results = True
++        self._condition = threading.Condition()
++        self._latest_img = None
++        self._latest_timestamp = 0.0
++        self._latest_seq = -1
++        self._last_consumed_seq = -1
++        self._decode_error = None
++        self._started_at = time.monotonic()
++
++        host = parsed.hostname or "0.0.0.0"
++        query = parse_qs(parsed.query)
++        default_format = "mpegts" if parsed.scheme == "tcp-listen" else "mjpeg"
++        self._container_format = query.get("format", [default_format])[0]
++        if parsed.scheme == "tcp-listen":
++            self._server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++            self._server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
++            self._server.bind((host, parsed.port))
++            self._server.listen(1)
++            print(f"Waiting for live stream on {host}:{parsed.port}", flush=True)
++            self._connection, address = self._server.accept()
++            self._server.close()
++        else:
++            print(f"Connecting to live stream at {host}:{parsed.port}", flush=True)
++            self._connection = socket.create_connection((host, parsed.port), timeout=15)
++            self._connection.settimeout(None)
++            address = self._connection.getpeername()
++        self._connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
++        print(
++            f"Live stream connected to {address[0]}:{address[1]} "
++            f"as {self._container_format}",
++            flush=True,
++        )
++
++        self._decoder = threading.Thread(target=self._decode_frames, daemon=True)
++        self._decoder.start()
++        self._wait_for_first_frame(timeout=15.0)
++
++    def __len__(self):
++        return 999999
++
++    def subsample(self, subsample):
++        del subsample
++
++    def _decode_frames(self):
++        try:
++            stream = self._connection.makefile("rb", buffering=0)
++            with av.open(
++                stream, mode="r", format=self._container_format
++            ) as container:
++                for frame in container.decode(video=0):
++                    img = frame.to_ndarray(format="rgb24")
++                    with self._condition:
++                        self._latest_img = img
++                        self._latest_timestamp = time.monotonic() - self._started_at
++                        self._latest_seq += 1
++                        self._condition.notify_all()
++        except Exception as exc:
++            with self._condition:
++                self._decode_error = exc
++                self._condition.notify_all()
++
++    def _wait_for_first_frame(self, timeout):
++        deadline = time.monotonic() + timeout
++        with self._condition:
++            while self._latest_img is None and self._decode_error is None:
++                remaining = deadline - time.monotonic()
++                if remaining <= 0:
++                    raise TimeoutError("Timed out waiting for the first live frame")
++                self._condition.wait(remaining)
++            if self._decode_error is not None:
++                raise RuntimeError("Live stream decoder failed") from self._decode_error
++
++    def get_img_shape(self):
++        self._wait_for_first_frame(timeout=15.0)
++        with self._condition:
++            img = self._latest_img.copy()
++        raw_img_shape = img.shape
++        resized = resize_img(img, self.img_size)
++        return resized["img"][0].shape[1:], raw_img_shape[:2]
++
++    def read_img(self, idx):
++        del idx
++        with self._condition:
++            while (
++                self._latest_seq <= self._last_consumed_seq
++                and self._decode_error is None
++            ):
++                self._condition.wait()
++            if self._decode_error is not None:
++                raise RuntimeError("Live stream decoder stopped") from self._decode_error
++            self._last_consumed_seq = self._latest_seq
++            img = self._latest_img.copy()
++            self.timestamps.append(self._latest_timestamp)
++        return img.astype(self.dtype)
++
++
+ class MP4Dataset(MonocularDataset):
+     def __init__(self, dataset_path):
+         super().__init__()
+@@ -242,6 +367,7 @@ class MP4Dataset(MonocularDataset):
+             self.cap = cv2.VideoCapture(str(self.dataset_path))
+             self.fps = self.cap.get(cv2.CAP_PROP_FPS)
+             self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
++            self.next_frame_idx = 0
+ 
+         self.stride = config["dataset"]["subsample"]
+ 
+@@ -249,18 +375,26 @@ class MP4Dataset(MonocularDataset):
+         return self.total_frames // self.stride
+ 
+     def read_img(self, idx):
++        target_frame = idx * self.stride
+         if HAS_TORCHCODEC:
+-            img = self.decoder[idx * self.stride]  # c,h,w
++            img = self.decoder[target_frame]  # c,h,w
+             img = img.permute(1, 2, 0)
+             img = img.numpy()
+         else:
+-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx * self.stride)
+-            ret, img = self.cap.read()
+-            if not ret:
+-                raise ValueError("Failed to read image")
++            if target_frame < self.next_frame_idx:
++                self.cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
++                self.next_frame_idx = target_frame
++            while self.next_frame_idx <= target_frame:
++                ret, img = self.cap.read()
++                if not ret:
++                    raise ValueError(
++                        f"Failed to decode frame {self.next_frame_idx} "
++                        f"while reading target frame {target_frame}"
++                    )
++                self.next_frame_idx += 1
+             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+         img = img.astype(self.dtype)
+-        timestamp = idx / self.fps
++        timestamp = target_frame / self.fps
+         self.timestamps.append(timestamp)
+         return img
+ 
+@@ -318,6 +452,9 @@ class Intrinsics:
+ 
+ 
+ def load_dataset(dataset_path):
++    if dataset_path.startswith(("tcp-listen://", "tcp-connect://")):
++        return TCPStreamDataset(dataset_path)
++
+     split_dataset_type = dataset_path.split("/")
+     if "tum" in split_dataset_type:
+         return TUMDataset(dataset_path)
+diff --git a/mast3r_slam/frame.py b/mast3r_slam/frame.py
+index 127fa06..a52f5c5 100644
+--- a/mast3r_slam/frame.py
++++ b/mast3r_slam/frame.py
+@@ -113,7 +113,7 @@ def create_frame(i, img, T_WC, img_size=512, device="cuda:0"):
+     rgb = img["img"].to(device=device)
+     img_shape = torch.tensor(img["true_shape"], device=device)
+     img_true_shape = img_shape.clone()
+-    uimg = torch.from_numpy(img["unnormalized_img"]) / 255.0
++    uimg = torch.from_numpy(img["unnormalized_img"].copy()) / 255.0
+     downsample = config["dataset"]["img_downsample"]
+     if downsample > 1:
+         uimg = uimg[::downsample, ::downsample]
+@@ -124,6 +124,11 @@ def create_frame(i, img, T_WC, img_size=512, device="cuda:0"):
+ 
+ class SharedStates:
+     def __init__(self, manager, h, w, dtype=torch.float32, device="cuda"):
++        image_h, image_w = h, w
++        downsample = config["dataset"]["img_downsample"]
++        if image_h % downsample or image_w % downsample:
++            raise ValueError("Pointmap downsample must divide the image dimensions")
++        h, w = image_h // downsample, image_w // downsample
+         self.h, self.w = h, w
+         self.dtype = dtype
+         self.device = device
+@@ -137,12 +142,12 @@ class SharedStates:
+         self.edges_jj = manager.list()
+ 
+         self.feat_dim = 1024
+-        self.num_patches = h * w // (16 * 16)
++        self.num_patches = image_h * image_w // (16 * 16)
+ 
+         # fmt:off
+         # shared state for the current frame (used for reloc/visualization)
+         self.dataset_idx = torch.zeros(1, device=device, dtype=torch.int).share_memory_()
+-        self.img = torch.zeros(3, h, w, device=device, dtype=dtype).share_memory_()
++        self.img = torch.zeros(3, image_h, image_w, device=device, dtype=dtype).share_memory_()
+         self.uimg = torch.zeros(h, w, 3, device="cpu", dtype=dtype).share_memory_()
+         self.img_shape = torch.zeros(1, 2, device=device, dtype=torch.int).share_memory_()
+         self.img_true_shape = torch.zeros(1, 2, device=device, dtype=torch.int).share_memory_()
+@@ -219,6 +224,11 @@ class SharedStates:
+ 
+ class SharedKeyframes:
+     def __init__(self, manager, h, w, buffer=512, dtype=torch.float32, device="cuda"):
++        image_h, image_w = h, w
++        downsample = config["dataset"]["img_downsample"]
++        if image_h % downsample or image_w % downsample:
++            raise ValueError("Pointmap downsample must divide the image dimensions")
++        h, w = image_h // downsample, image_w // downsample
+         self.lock = manager.RLock()
+         self.n_size = manager.Value("i", 0)
+ 
+@@ -228,11 +238,11 @@ class SharedKeyframes:
+         self.device = device
+ 
+         self.feat_dim = 1024
+-        self.num_patches = h * w // (16 * 16)
++        self.num_patches = image_h * image_w // (16 * 16)
+ 
+         # fmt:off
+         self.dataset_idx = torch.zeros(buffer, device=device, dtype=torch.int).share_memory_()
+-        self.img = torch.zeros(buffer, 3, h, w, device=device, dtype=dtype).share_memory_()
++        self.img = torch.zeros(buffer, 3, image_h, image_w, device=device, dtype=dtype).share_memory_()
+         self.uimg = torch.zeros(buffer, h, w, 3, device="cpu", dtype=dtype).share_memory_()
+         self.img_shape = torch.zeros(buffer, 1, 2, device=device, dtype=torch.int).share_memory_()
+         self.img_true_shape = torch.zeros(buffer, 1, 2, device=device, dtype=torch.int).share_memory_()
+diff --git a/mast3r_slam/visualization.py b/mast3r_slam/visualization.py
+index 9a91e04..fa78a16 100644
+--- a/mast3r_slam/visualization.py
++++ b/mast3r_slam/visualization.py
+@@ -1,4 +1,5 @@
+ import dataclasses
++import time
+ import weakref
+ from pathlib import Path
+ 
+@@ -72,7 +73,8 @@ class Window(WindowEvents):
+         self.keyframes = keyframes
+         self.states = states
+ 
+-        self.show_all = True
++        visualization_cfg = config.get("visualization", {})
++        self.show_all = visualization_cfg.get("show_all", True)
+         self.show_keyframe_edges = True
+         self.culling = True
+         self.follow_cam = True
+@@ -84,7 +86,9 @@ class Window(WindowEvents):
+ 
+         self.line_thickness = 3
+         self.show_keyframe = True
+-        self.show_curr_pointmap = True
++        self.show_curr_pointmap = visualization_cfg.get(
++            "show_curr_pointmap", True
++        )
+         self.show_axis = True
+ 
+         self.textures = dict()
+@@ -425,8 +429,11 @@ def run_visualization(cfg, states, keyframes, main2viz, viz2main) -> None:
+     window.set_default_viewport()
+ 
+     timer.start()
++    max_fps = max(float(cfg.get("visualization", {}).get("max_fps", 60)), 1.0)
++    min_frame_time = 1.0 / max_fps
+ 
+     while not window.is_closing:
++        frame_started = time.monotonic()
+         current_time, delta = timer.next_frame()
+ 
+         if window_config.clear_color is not None:
+@@ -438,6 +445,9 @@ def run_visualization(cfg, states, keyframes, main2viz, viz2main) -> None:
+         window.render(current_time, delta)
+         if not window.is_closing:
+             window.swap_buffers()
++        remaining = min_frame_time - (time.monotonic() - frame_started)
++        if remaining > 0:
++            time.sleep(remaining)
+ 
+     state = window_config.state
+     window.destroy()

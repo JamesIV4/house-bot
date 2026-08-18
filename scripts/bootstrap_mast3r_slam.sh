@@ -14,7 +14,7 @@ LIETORCH_URL="https://github.com/princeton-vl/lietorch.git"
 LIETORCH_REF="e7df86554156b36846008d8ddbcc4d8521a16554"
 PATCH_FILES=(
   "$ROOT_DIR/patches/mast3r-slam/blackwell-sm120.patch"
-  "$ROOT_DIR/patches/mast3r-slam/video-input.patch"
+  "$ROOT_DIR/patches/mast3r-slam/house-bot-runtime.patch"
 )
 
 mkdir -p "$TOOLS_DIR" "$ROOT_DIR/envs" "$ROOT_DIR/external"
@@ -77,8 +77,18 @@ export MAX_JOBS="4"
 
 PYTHON="$ENV_PREFIX/bin/python"
 
+# ModernGL loads the unversioned GL/EGL names. Ubuntu's WSL runtime ships the
+# versioned libraries but not the development-package symlinks, so keep the
+# required loader names inside this project environment.
+ln -sfn /lib/x86_64-linux-gnu/libGL.so.1 "$ENV_PREFIX/lib/libGL.so"
+ln -sfn /lib/x86_64-linux-gnu/libEGL.so.1 "$ENV_PREFIX/lib/libEGL.so"
+
+if ! "$PYTHON" -c 'import av; assert av.__version__ == "18.1.0"' >/dev/null 2>&1; then
+  "$PYTHON" -m pip install av==18.1.0
+fi
+
 if "$PYTHON" -c \
-  'import torch; import cv2, curope, in3d, lietorch, lietorch_backends, lietorch_extras, mast3r, mast3r_slam, mast3r_slam_backends; assert torch.cuda.is_available(); assert torch.cuda.get_device_capability(0) == (12, 0)' \
+  'import torch; import av, cv2, curope, in3d, lietorch, lietorch_backends, lietorch_extras, mast3r, mast3r_slam, mast3r_slam_backends; assert av.__version__ == "18.1.0"; assert torch.cuda.is_available(); assert torch.cuda.get_device_capability(0) == (12, 0)' \
   >/dev/null 2>&1; then
   echo "MASt3R-SLAM environment is already ready"
   exit 0

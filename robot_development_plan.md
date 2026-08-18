@@ -1,6 +1,6 @@
 # House Bot Development Plan
 
-**Plan status:** SLAM-first revision, 2026-08-17
+**Plan status:** navigation-runtime revision, 2026-08-17
 
 **Repository:** `/home/james/Repos/house-bot` in Ubuntu WSL
 
@@ -15,7 +15,7 @@ to that working mapper instead of preceding it.
 
 The MVP is complete when:
 
-1. a live camera stream produces a persistent map and camera pose;
+1. a live camera stream produces a persistent navigation map and camera pose;
 2. the mapper can close a loop through multiple rooms;
 3. the camera can move from the PC to the Raspberry Pi/robot without changing
    the SLAM interface;
@@ -26,28 +26,35 @@ The MVP is complete when:
 
 ```mermaid
 flowchart LR
-    CAM["Camera"] --> STREAM["Video stream"]
-    STREAM --> SLAM["GPU dense SLAM"]
-    SLAM --> POSE["Live pose"]
-    SLAM --> MAP["Persistent map"]
+    CAM["30 FPS camera"] --> STREAM["Newest-frame stream"]
+    STREAM --> POSE["Fast visual pose"]
+    STREAM --> DEPTH["Scheduled depth"]
+    STREAM --> PERSON["Person tracking"]
+    POSE --> FUSION["Bounded local fusion"]
+    DEPTH --> FUSION
+    FUSION --> MAP["Floor and obstacle map"]
     MAP --> NAV["Navigation"]
     POSE --> NAV
-    PERSON["Person perception"] --> NAV
+    PERSON --> NAV
     NAV --> PI["Raspberry Pi base controller"]
-    VIEW["Live 3D viewer"] --- SLAM
+    VIEW["2 Hz diagnostic 3D viewer"] --- FUSION
 ```
 
-The camera source is replaceable. Phase 1 can use a file or a camera attached
-to the PC. Later phases use the same image interface over the network from the
+The camera source is replaceable. Pose, depth, person perception, persistent
+mapping, and visualization run independently so a slow dense product cannot
+stall the robot control path. Phase 1 can use a file or a camera attached to
+the PC. Later phases use the same image interface over the network from the
 robot.
 
-## Phase 1 - Working dense SLAM now
+## Phase 1 - Establish the dense mapping baseline
 
 ### Target
 
 Use MASt3R-SLAM as the first implementation because it produces monocular pose
 and dense geometry from ordinary video. Run it standalone first; ROS is not a
-prerequisite for proving the mapper.
+prerequisite for proving the mapper. This phase establishes evidence and a
+comparison baseline; it does not require MASt3R to remain the production
+navigation tracker.
 
 ### Work
 
@@ -82,8 +89,64 @@ prerequisite for proving the mapper.
   verified.
 - [x] Record and map a deliberate C920 room loop: 73 keyframes and 7.38 million
   colored points from a 60-second recording.
-- [ ] Confirm the interactive 3D viewer on the house recording.
-- [ ] Add a continuous stream adapter after the recorded loop works.
+- [x] Confirm the interactive 3D viewer under WSLg.
+- [x] Add continuous C920 input with a newest-frame TCP/PyAV adapter.
+- [x] Diagnose the viewer/control-path contention using the user's moving run.
+- [x] Repair and benchmark quarter-density pointmaps.
+- [x] Limit the diagnostic full-map viewer to 2 Hz, restoring 7-8 FPS on the
+  bounded visualized room run.
+
+## Phase 1B - Select the production pose path
+
+### Target
+
+Use a sparse, loop-closing tracker for timely robot pose. Benchmark
+DPVO/DPV-SLAM first on the existing room loop and live C920 stream. Keep
+MASt3R-SLAM available for dense mapping and comparison.
+
+### Work
+
+1. Build a pinned DPVO/DPV-SLAM environment compatible with the RTX 5060 Ti.
+2. Calibrate the fixed C920 camera used on the robot.
+3. Run the same 60-second room recording and save trajectory/timing results.
+4. Run the live newest-frame stream with visualization excluded from timing.
+5. Measure throughput, latency, tracking loss, relocalization, and loop closure.
+6. Select the pose backend from measured behavior, not reconstruction beauty.
+
+### Acceptance
+
+- sustained pose output is at least 15 Hz on the development PC;
+- processing stays near current camera time instead of accumulating delay;
+- the complete room loop remains connected and closes;
+- pose throughput does not materially decline as the route grows;
+- the result can consume the existing local and Pi camera interfaces.
+
+### Progress
+
+- [x] Pinned DPVO/DPV-SLAM environment built for RTX 5060 Ti `sm_120`.
+- [x] Same 796-sample room loop benchmarked for DPVO, stock DPV-SLAM, fast
+  DPV-SLAM, and the House Bot navigation profile.
+- [x] Five-minute graph-growth test completed; selected profile sustained
+  16.43 FPS overall and 15.78 FPS in the final partial window.
+- [x] Production pose candidate selected: 96-patch DPV-SLAM with global
+  optimization every 60 retained keyframes.
+- [x] Replace the approximate FOV-derived intrinsics with a 29-view fixed-focus
+  C920 calibration at 0.5706 px RMS reprojection error.
+- [x] Connect the selected pose backend to the Pi's newest-frame H.264 stream;
+  a stationary 150-sample transport smoke completed with bounded freshness.
+- [x] Complete a moving 300-pose Pi-camera trajectory run at an effective
+  16.96 Hz with 54 retained keyframes.
+- [x] Complete a measured-calibration 1,000-pose route over 60.27 source
+  seconds at 16.58 effective pose Hz with 154 retained keyframes.
+
+### Depth gate
+
+Do not add a depth network until the pose path passes. Then benchmark the
+smallest temporally stable model that can supply local floor/obstacle geometry
+at 5-10 Hz. Online Video Depth Anything is the first candidate, but its
+relative depth needs a metric scale source such as wheel odometry. Persist a
+bounded 5 cm-class voxel map rather than every predicted pixel from every
+frame.
 
 ## Phase 2 - Live camera transport
 
@@ -120,6 +183,20 @@ then resume with the new camera orientation registered.
 - the robot stream can map a multi-room walk without transport failure;
 - the better camera path is selected from the resulting maps.
 
+### Progress
+
+- [x] Continuous Windows C920 stream maps through the common TCP/PyAV adapter.
+- [x] WSL reverse-connect mode decodes a zero-transcode MJPEG camera server,
+  matching the intended Pi-to-PC direction.
+- [x] Pi-side FFmpeg sender and WSL-side Pi camera launcher added.
+- [x] Power and discover the Raspberry Pi on the local network.
+- [x] Attach the C920 to the Pi and complete a bounded robot-side stream run.
+- [x] Verify 1280x720/30 native H.264 over Pi Wi-Fi and newest-frame drop
+  behavior.
+- [x] Move the Pi camera through a room route and save a live 300-pose
+  DPV-SLAM trajectory.
+- [ ] Measure reconnect behavior after an unplanned Wi-Fi interruption.
+
 ## Phase 3 - Put the mapper on wheels
 
 Once the camera mapper works, integrate the Raspberry Pi and base.
@@ -138,6 +215,16 @@ Once the camera mapper works, integrate the Raspberry Pi and base.
 - the robot-mounted camera builds the same quality map as the handheld camera;
 - the live robot pose remains located in the map through a room loop;
 - a saved map can be loaded and the robot relocalizes within it.
+
+### Progress
+
+- [x] Define the real-base boundary as `/cmd_vel`, `/odom`, `odom -> base_link`,
+  and `map -> odom`.
+- [x] Stand up the complete Nav2 consumer side against the official loopback
+  base while motors are unavailable.
+- [ ] Measure the assembled footprint, wheel geometry, and camera-to-base
+  transform.
+- [ ] Replace loopback with the Pi motor/encoder adapter.
 
 ## Phase 4 - Navigation in the SLAM map
 
@@ -158,6 +245,19 @@ connect it to Nav2 or a smaller controller if that reaches the result faster.
 - after restart it relocalizes in that map;
 - it navigates between at least two named destinations;
 - it replans around an obstacle introduced after mapping.
+
+### Progress
+
+- [x] Add a pinned ROS 2 Jazzy/Nav2 container without changing the WSL host.
+- [x] Configure map server, NavFn planning, regulated pure pursuit control,
+  velocity smoothing, behaviors, and waypoint actions for the small-base
+  provisional geometry.
+- [x] Add a deterministic mock house and hardware-free end-to-end navigation
+  acceptance test.
+- [x] Add the Vizanti browser map/pose/path/goal UI and named-room services.
+- [ ] Replace mock destinations and geometry with measurements from the real
+  base and first metric map.
+- [ ] Add live obstacle geometry after wheel scale and depth are available.
 
 ## Phase 5 - Interact with people
 
@@ -218,6 +318,9 @@ docs/                       Decisions, results, and project knowledge
 
 ## Immediate next actions
 
-1. Replay the completed C920 loop with the interactive 3D viewer enabled.
-2. Add continuous C920 ingestion using the same frame interface.
-3. Move that stream to the Pi.
+1. Identify the wheeled platform's motor driver and determine whether wheel
+   encoders are present from labels, connectors, and photos.
+2. Mount the fixed-focus C920 rigidly to the base, measure its transform, and
+   repeat the calibrated route from a natural starting scene.
+3. Add metric wheel observations to the selected DPV-SLAM pose path before
+   treating monocular translation as navigation distance.

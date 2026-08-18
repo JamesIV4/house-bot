@@ -1,0 +1,22 @@
+### House Bot DPV-SLAM navigation profile ###
+
+# Keep the upstream default tracking density; the 48-patch fast profile was
+# faster but accumulated substantially more drift on the closed room loop.
+PATCHES_PER_FRAME: 96
+REMOVAL_WINDOW: 22
+OPTIMIZATION_WINDOW: 10
+PATCH_LIFETIME: 13
+
+KEYFRAME_THRESH: 15.0
+MOTION_MODEL: 'DAMPED_LINEAR'
+MOTION_DAMPING: 0.5
+MIXED_PRECISION: True
+CENTROID_SEL_STRAT: 'RANDOM'
+
+# Long-range optimization is synchronous in upstream DPV-SLAM. Running it on
+# every 15 retained keyframes eventually falls below camera rate as the graph
+# grows, so navigation uses a lower correction frequency while retaining the
+# same loop-candidate age and threshold.
+GLOBAL_OPT_FREQ: 60
+MAX_EDGE_AGE: 1000
+BACKEND_THRESH: 64.0
