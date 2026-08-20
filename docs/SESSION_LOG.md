@@ -3,6 +3,65 @@
 Keep entries concise and evidence based. Link detailed experiment records when
 they exist.
 
+## 2026-08-20 - One-second directional motor command test
+
+### Verified
+
+- Confirmed `house-bot-motors.service` was active on `housebot` at
+  `192.168.0.241` before testing.
+- Sent each command for 1.0 second through `scripts/send_motor_command.py` in
+  this order: `forward`, `reverse` (backward), `left`, and `right`.
+- Each test sent 20 drive packets, received 21 acknowledgements including the
+  stop packet, and reported `stop acknowledged=True`.
+- The client therefore confirmed command delivery and clean stop handling for
+  all four directions.
+
+## 2026-08-19 - Original remote selected as the no-new-parts motor bridge
+
+### Verified
+
+- The `GT004TX-V01` remote uses two AAA cells and has a single-sided PCB with
+  an unmarked radio/control IC, 16 MHz resonator, and printed 2.4 GHz antenna.
+- Bluetooth discovery and advertisement experiments did not produce a hub
+  pairing or motor response.
+- The Pi 3B and PC Wi-Fi/Bluetooth interfaces cannot directly emit the likely
+  XN297-family proprietary packets through their normal APIs.
+
+### Changed
+
+- Added a Pi GPIO probe/controller that senses a button pad as a high-impedance
+  input before it permits active-low motor pulses.
+- The controller releases buttons as GPIO inputs and only ever drives them
+  low; it never drives the remote circuit high.
+- Added the exact one-wire-at-a-time verification and provisional four-button
+  wiring procedure in `docs/MOTOR_REMOTE_GPIO.md`.
+
+### Next evidence
+
+- Live probing observed brief `1 -> 0 -> 1` scan windows while the physical
+  button was held. A two-second continuous column-low pulse moved both motors,
+  proving the remote buttons are matrix-scanned rather than independent
+  active-low inputs.
+- The opposite button pad exposed a 215.8 us median target-row low window every
+  40.15 ms. The Pi mirrored 49 windows in two seconds and moved only the
+  left wheel forward, proving software-gated matrix control.
+- The left-reverse pair measured a 220.9 us median BCM7 row window every
+  40.13 ms; gating its BCM6 column moved only the left wheel backward.
+- The right-forward pair measured a 219.4 us median BCM9 row window every
+  40.13 ms; gating its BCM8 column moved only the right wheel forward.
+- The right-reverse pair measured a 221.1 us median BCM11 row window every
+  40.11 ms; gating its BCM10 column moved only the right wheel backward.
+- All four directions and the paired forward, reverse, pivot-left, and
+  pivot-right commands moved the correct wheels.
+- Installed an auto-starting Pi UDP motor service on port 8765 with monotonic
+  command sessions, stale-packet rejection, an acknowledged stop, and a 350 ms
+  command-loss release. The stop-only WSL network test passed; live network
+  motion and the `/cmd_vel` adapter are next.
+- Saved the complete nine-wire pinout in
+  `docs/REMOTE_WIRING_PINOUT.md`.
+
+Detailed record: `docs/experiments/2026-08-19-gt004-remote-control.md`.
+
 ## 2026-08-17 - Hardware-free Nav2 and browser UI implemented
 
 ### Verified

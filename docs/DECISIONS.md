@@ -158,3 +158,15 @@
 - **Reason:** Vizanti already implements the required browser/RViz-style
   workflow. A custom dashboard would duplicate mapping and goal tools without
   improving the first autonomous navigation result.
+
+## D-017 - Use GPIO-gated original-remote matrix control for the first base
+
+- **Status:** accepted, 2026-08-19
+- **Decision:** keep the original `GT004TX-V01` remote as the paired 2.4 GHz
+  transmitter. Observe each selected button's scan row with an input-only Pi
+  GPIO and pull its shared input column low only inside that row's low window.
+- **Reason:** directly holding the shared column low moved both motors. BCM5
+  then exposed a repeatable 215.8 us scan window every 40.15 ms, and the Pi
+  mirrored 49 windows over two seconds through BCM4 while moving only the
+  intended motor. This provides a verified no-new-parts command path while the
+  receiver remains the motor power stage.

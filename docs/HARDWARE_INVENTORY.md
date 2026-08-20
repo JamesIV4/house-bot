@@ -17,11 +17,12 @@ Update this file from labels, datasheets, measurements, and clear photos. Use
 | Item | Known details | Status / questions |
 |---|---|---|
 | Wheel platform | Battery-powered wheeled platform | Manufacturer/model and photos needed |
-| Drive arrangement | unknown | Differential drive? Caster count? Wheel diameter? Track width? |
-| Motors | unknown | Label, rated voltage/current, stall current, gear ratio? |
-| Motor driver | unknown | Board/model, logic voltage, control protocol, peak current? |
-| Wheel encoders | unknown | Present? Type, counts/revolution, voltage, connector/pinout? |
-| Battery | unknown | Chemistry, nominal/full voltage, capacity, connector, BMS? |
+| Drive arrangement | Two independently driven sides; forward, reverse, and both pivot combinations verified | Wheel diameter, track width, and caster arrangement still needed |
+| Motors | Two LEGO-compatible geared motors with four-wire proprietary connectors | Label, rated voltage/current, stall current, gear ratio, and meaning of extra conductors unknown |
+| Motor driver | Original rechargeable four-port A-D receiver/battery unit; proprietary 2.4 GHz link through `GT004TX-V01` remote | Pi GPIO matrix gating is verified; receiver driver IC and peak current unknown |
+| Motor-control wiring | Nine Pi-to-remote wires: common ground plus row/column pairs for four directions | Authoritative map: `docs/REMOTE_WIRING_PINOUT.md` |
+| Wheel encoders | No feedback integrated | Determine whether the motors' four conductors include encoder signals |
+| Battery | Rechargeable battery is integrated into the four-port receiver; USB-C charging | Chemistry, nominal/full voltage, capacity, and BMS unknown |
 | Pi regulator | unknown | Separate regulated 5 V supply? Current rating and measured output? |
 | Portable power bank | Model and cable unknown | Powered Pi+C920 during calibrated route; current throttle/undervoltage bits were intermittent, while camera rate remained 30 FPS |
 | Charger | unknown | Model and compatibility with battery chemistry? |
