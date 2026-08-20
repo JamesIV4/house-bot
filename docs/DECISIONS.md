@@ -170,3 +170,19 @@
   mirrored 49 windows over two seconds through BCM4 while moving only the
   intended motor. This provides a verified no-new-parts command path while the
   receiver remains the motor power stage.
+
+## D-018 - Treat command-integrated base odometry as calibration-only
+
+- **Status:** accepted, 2026-08-20
+- **Decision:** bridge Nav2 `/cmd_vel` to the Pi remote service using measured
+  differential-drive parameters and publish high-covariance open-loop `/odom`
+  for supervised calibration. Start the bridge disarmed and retain independent
+  command, acknowledgement, and Pi watchdog stops. Do not authorize unattended
+  navigation until metric visual or encoder feedback and a live obstacle source
+  are connected.
+- **Reason:** the receiver provides reliable direction control but no verified
+  wheel feedback. Integrating requested motion is useful for checking the ROS
+  hardware boundary, but presenting it as measured localization would hide slip,
+  wheel asymmetry, stalls, and collisions. Nav2 remains the established planner
+  and controller; subsequent fusion and collision gating should use standard ROS
+  components rather than custom replacements.

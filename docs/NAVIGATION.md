@@ -1,9 +1,10 @@
 # Navigation and Browser UI
 
 House Bot now has a hardware-independent ROS 2 Jazzy navigation runtime. It
-uses Nav2 for planning and control, Nav2's loopback simulator in place of the
-unfinished mobile base, and Vizanti for the browser UI. The loopback base is
-removed—not rewritten—when the Pi motor/odometry adapter is ready.
+uses Nav2 for planning and control, Nav2's loopback simulator for deterministic
+acceptance, and Vizanti for the browser UI. A real Pi base bridge is implemented
+but remains calibration-gated; follow [Base calibration](BASE_CALIBRATION.md)
+before running it.
 
 ## Run it
 
@@ -75,7 +76,9 @@ JSON status.
 ### Inputs expected from the real robot
 
 The hardware launch uses the same navigation nodes but omits the loopback node.
-The Pi/base integration must provide:
+The implemented base bridge consumes `/cmd_vel` and provides `/odom` plus
+`odom -> base_link`, but its first odometry estimate is command-integrated and
+must not be mistaken for encoder feedback. Complete navigation must provide:
 
 - `nav_msgs/msg/Odometry` on `/odom`;
 - the `odom -> base_link` transform at the odometry update rate;
@@ -91,6 +94,11 @@ The current costmaps use the static occupancy map only. A depth-derived or
 range-derived obstacle topic is the next perception input after metric scale
 exists; it can be added as a Nav2 obstacle layer without changing the UI or
 goal API.
+
+The real bridge starts disabled. `/house_bot/base/enable` arms or disarms it,
+`/house_bot/estop` latches an emergency stop, and
+`/house_bot/base/status` reports command freshness, Pi acknowledgement age,
+wheel duty, and the explicit odometry source.
 
 ## Named destinations
 
@@ -128,4 +136,3 @@ the scheduled depth/point-cloud layer then supplies obstacle geometry.
   differential-base controller and costmaps.
 - `ros_ws/src/house_bot_navigation/config/vizanti_layout.json`: project UI.
 - `scripts/test_navigation_stack.sh`: unit plus end-to-end acceptance test.
-

@@ -24,6 +24,7 @@ setup(
     license="MIT",
     entry_points={
         "console_scripts": [
+            "base_driver = house_bot_navigation.base_driver:main",
             "named_goal_manager = house_bot_navigation.named_goal_manager:main",
             "mock_initial_pose = house_bot_navigation.mock_initial_pose:main",
             "navigation_smoke_test = house_bot_navigation.smoke_test:main",

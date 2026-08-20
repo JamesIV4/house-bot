@@ -3,6 +3,43 @@
 Keep entries concise and evidence based. Link detailed experiment records when
 they exist.
 
+## 2026-08-20 - Real-base calibration and Nav2 handoff implemented
+
+### Verified
+
+- Added scan-window pulse-density control to the Pi service; 0.5 duty selected
+  exactly four of eight synthetic remote scan windows, while repeated 20 Hz
+  network refreshes preserved phase.
+- All 19 host-side motor, GPIO, protocol, and calibration tests passed.
+- The ROS Jazzy image built and all 11 navigation-package tests passed.
+- A synthetic calibrated base launch stayed disarmed, published the explicit
+  open-loop warning, and exited cleanly after a three-second smoke test.
+- The full loopback Nav2 Kitchen route succeeded at `(2.504, -0.061)`, 0.114 m
+  from the target. The first attempt exposed an acceptance-test startup race;
+  the harness now waits for `bt_navigator` lifecycle state `active` before
+  sending a goal.
+- Deployed the updated Pi service to `192.168.0.241`; its systemd user service
+  reported `active`, and a stop-only UDP check received an acknowledged stop.
+  No movement command was sent during deployment verification.
+
+### Changed
+
+- Added a repeatable measurement worksheet and solver for wheel separation,
+  footprint, four direction-specific wheel rates, and the rigid C920 transform.
+- Added the initially disarmed ROS `/cmd_vel` to UDP bridge, high-covariance
+  command-integrated `/odom`, TF publication, acknowledgement timeout, enable
+  service, and latched emergency stop.
+- Preserved Nav2's NavFn, regulated pure pursuit, velocity smoothing, behaviors,
+  lifecycle, waypoint, and Vizanti layers; custom code remains at the unusual
+  remote and pose-adapter boundaries.
+
+### Next physical evidence
+
+- Measure geometry and record two timed trials for forward, reverse, pivot-left,
+  and pivot-right using `docs/BASE_CALIBRATION.md`.
+- Validate 0.5-duty motion after solving the full-power calibration, then repeat
+  the rigidly mounted natural-scene DPV-SLAM route for metric scale alignment.
+
 ## 2026-08-20 - One-second directional motor command test
 
 ### Verified

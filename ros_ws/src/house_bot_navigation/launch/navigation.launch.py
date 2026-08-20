@@ -16,6 +16,7 @@ def generate_launch_description() -> LaunchDescription:
     vizanti_share = get_package_share_directory("vizanti_server")
 
     params_file = LaunchConfiguration("params_file")
+    base_calibration_file = LaunchConfiguration("base_calibration_file")
     destinations_file = LaunchConfiguration("destinations_file")
     use_sim_time = LaunchConfiguration("use_sim_time")
     with_ui = LaunchConfiguration("with_ui")
@@ -23,7 +24,11 @@ def generate_launch_description() -> LaunchDescription:
     rosbridge_port = LaunchConfiguration("rosbridge_port")
     ui_layout = LaunchConfiguration("ui_layout")
 
-    common_parameters = [params_file, {"use_sim_time": use_sim_time}]
+    common_parameters = [
+        params_file,
+        base_calibration_file,
+        {"use_sim_time": use_sim_time},
+    ]
     tf_remappings = [("/tf", "tf"), ("/tf_static", "tf_static")]
 
     navigation_nodes = [
@@ -137,6 +142,12 @@ def generate_launch_description() -> LaunchDescription:
                 default_value=os.path.join(package_share, "config", "nav2_params.yaml"),
             ),
             DeclareLaunchArgument(
+                "base_calibration_file",
+                default_value=os.path.join(
+                    package_share, "config", "base-calibration-placeholder.yaml"
+                ),
+            ),
+            DeclareLaunchArgument(
                 "destinations_file",
                 default_value=os.path.join(
                     package_share, "config", "destinations.yaml"
@@ -153,4 +164,3 @@ def generate_launch_description() -> LaunchDescription:
             *navigation_nodes,
         ]
     )
-

@@ -45,7 +45,11 @@ reprojection error. With undistortion enabled, a larger-space Pi-camera pass
 saved 1,000 poses over 60.27 source seconds at 16.58 effective pose Hz, retained
 154 keyframes, and closed to 1.15% of post-initialization path length. See the
 [calibration and longer-route record](docs/experiments/2026-08-17-c920-calibration-long-route.md).
-The next gate is rigid camera/base integration and metric wheel motion.
+The base now has a verified Pi-controlled motor path, and the next gate is
+[rigid camera/base and motion calibration](docs/BASE_CALIBRATION.md). The real
+ROS bridge is calibration-gated, starts disarmed, retains the Pi watchdog, and
+labels its initial odometry as open-loop rather than presenting it as encoder
+feedback.
 
 While the base is being assembled, the navigation and operator layers are now
 implemented against Nav2's official loopback base. The browser UI exposes the

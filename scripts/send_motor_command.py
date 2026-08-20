@@ -94,6 +94,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="192.168.0.241")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--duration", type=float, default=1.0)
+    parser.add_argument(
+        "--power",
+        type=float,
+        default=1.0,
+        help="wheel command magnitude from 0.05 to 1.0",
+    )
     parser.add_argument("--rate", type=float, default=20.0, help="command refresh rate in Hz")
     return parser
 
@@ -102,9 +108,13 @@ def main() -> int:
     args = build_parser().parse_args()
     if args.duration < 0:
         raise SystemExit("--duration must be non-negative")
+    if not 0.05 <= args.power <= 1.0:
+        raise SystemExit("--power must be between 0.05 and 1.0")
     if not 5.0 <= args.rate <= 50.0:
         raise SystemExit("--rate must be between 5 and 50 Hz")
     left, right = MOTIONS[args.motion]
+    left *= args.power
+    right *= args.power
     packets, acknowledgements, stop_acknowledged = send_motion(
         args.host,
         args.port,

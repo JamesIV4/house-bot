@@ -1,0 +1,5 @@
+# Safety gate: the real base driver refuses to start with this file.
+# Generate config/local/base_calibration.yaml from measured trials.
+house_bot_base:
+  ros__parameters:
+    calibrated: false

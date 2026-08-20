@@ -88,27 +88,57 @@ class MatrixMotorRuntime:
             self.gpio.setup(pin, self.gpio.IN, pull_up_down=self.gpio.PUD_OFF)
         self.actions: tuple[str, ...] = ()
         self.sink_active = {name: False for name in MATRIX_PINS}
+        self.row_was_low = {name: False for name in MATRIX_PINS}
+        self.window_enabled = {name: False for name in MATRIX_PINS}
+        self.duty_accumulator = {name: 0.0 for name in MATRIX_PINS}
+        self.action_levels = {name: 0.0 for name in MATRIX_PINS}
         self.window_counts = {name: 0 for name in MATRIX_PINS}
 
     def set_wheels(self, left: float, right: float) -> tuple[str, ...]:
         new_actions = actions_for_wheels(left, right)
         if new_actions != self.actions:
             self.release_columns()
+            for name in MATRIX_PINS:
+                self.row_was_low[name] = False
+                self.window_enabled[name] = False
+                self.duty_accumulator[name] = 0.0
             self.actions = new_actions
+        levels = {
+            "left-forward": max(left, 0.0),
+            "left-reverse": max(-left, 0.0),
+            "right-forward": max(right, 0.0),
+            "right-reverse": max(-right, 0.0),
+        }
+        for name, level in levels.items():
+            previous = self.action_levels[name]
+            self.action_levels[name] = level
+            if name in new_actions and previous <= 0.05 < level:
+                # Make the first requested scan window active. Subsequent
+                # windows use an error accumulator, producing an even pulse
+                # density without resetting phase on every network refresh.
+                self.duty_accumulator[name] = 1.0 - level
         return self.actions
 
     def poll(self) -> None:
         for name in self.actions:
             row_pin, column_pin = MATRIX_PINS[name]
             row_low = int(self.gpio.input(row_pin)) == 0
-            if row_low and not self.sink_active[name]:
+            if row_low and not self.row_was_low[name]:
                 self.window_counts[name] += 1
+                accumulator = self.duty_accumulator[name] + self.action_levels[name]
+                self.window_enabled[name] = accumulator >= 1.0 - 1e-9
+                self.duty_accumulator[name] = (
+                    accumulator - 1.0 if self.window_enabled[name] else accumulator
+                )
             self.sink_active[name] = apply_matrix_row_level(
                 self.gpio,
                 column_pin,
-                row_low,
+                row_low and self.window_enabled[name],
                 self.sink_active[name],
             )
+            self.row_was_low[name] = row_low
+            if not row_low:
+                self.window_enabled[name] = False
 
     def release_columns(self) -> None:
         for pin in self.column_pins:

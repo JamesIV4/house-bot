@@ -1,6 +1,6 @@
 # House Bot Development Plan
 
-**Plan status:** navigation-runtime revision, 2026-08-17
+**Plan status:** real-base calibration, 2026-08-20
 
 **Repository:** `/home/james/Repos/house-bot` in Ubuntu WSL
 
@@ -222,9 +222,17 @@ Once the camera mapper works, integrate the Raspberry Pi and base.
   and `map -> odom`.
 - [x] Stand up the complete Nav2 consumer side against the official loopback
   base while motors are unavailable.
+- [x] Identify and deploy the Pi-controlled original-remote motor path, then
+  verify forward, reverse, and both pivot directions.
+- [x] Add a calibration-gated ROS base bridge with fractional wheel commands,
+  disarmed startup, stale-command and acknowledgement stops, open-loop odometry,
+  and the measured camera transform boundary.
 - [ ] Measure the assembled footprint, wheel geometry, and camera-to-base
   transform.
-- [ ] Replace loopback with the Pi motor/encoder adapter.
+- [ ] Fit and validate direction-specific motion rates; determine whether the
+  four-wire motors expose usable encoder feedback.
+- [ ] Replace loopback with the Pi base adapter plus metric visual/encoder
+  correction; do not use command-integrated odometry alone for autonomy.
 
 ## Phase 4 - Navigation in the SLAM map
 
