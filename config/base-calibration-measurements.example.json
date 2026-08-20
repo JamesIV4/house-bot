@@ -1,6 +1,5 @@
 {
   "geometry": {
-    "wheel_separation_m": null,
     "footprint_length_m": null,
     "footprint_width_m": null,
     "footprint_safety_margin_m": 0.02
@@ -14,21 +13,9 @@
     "yaw_deg": 0.0
   },
   "trials": {
-    "forward": [
-      {"power": 1.0, "duration_s": 2.0, "distance_m": null},
-      {"power": 1.0, "duration_s": 2.0, "distance_m": null}
-    ],
-    "reverse": [
-      {"power": 1.0, "duration_s": 2.0, "distance_m": null},
-      {"power": 1.0, "duration_s": 2.0, "distance_m": null}
-    ],
-    "left": [
-      {"power": 1.0, "duration_s": 2.0, "angle_deg": null},
-      {"power": 1.0, "duration_s": 2.0, "angle_deg": null}
-    ],
-    "right": [
-      {"power": 1.0, "duration_s": 2.0, "angle_deg": null},
-      {"power": 1.0, "duration_s": 2.0, "angle_deg": null}
-    ]
+    "forward": [{"power": 1.0, "duration_s": 3.0, "distance_m": null, "heading_change_deg": 0.0}],
+    "reverse": [{"power": 1.0, "duration_s": 3.0, "distance_m": null, "heading_change_deg": 0.0}],
+    "left": [{"power": 1.0, "duration_s": 3.0, "angle_deg": null}],
+    "right": [{"power": 1.0, "duration_s": 3.0, "angle_deg": null}]
   }
 }

@@ -37,14 +37,17 @@ cd /home/james/Repos/house-bot
 ## 2. Measure rigid geometry
 
 Use metres and the ROS REP-103/105 convention. Define `base_link` at the floor
-projection of the midpoint between the driven wheels: x forward, y left, z up.
+projection of the centre of the tread contact area: x forward, y left, z up.
 
-Measure:
+Estimate:
 
-- wheel separation between the left and right ground-contact centre lines;
 - maximum assembled footprint length and width, including protrusions;
 - C920 optical-centre x, y, and z relative to `base_link`;
 - camera mount roll, pitch, and yaw. Zero means level and forward-facing.
+
+For a tread base, do not guess a wheel separation. The solver derives an
+effective skid-steer track width from observed straight and pivot motion, which
+captures tread scrub better than the outside-to-outside dimension.
 
 The base bridge publishes `base_link -> camera_link` from these measurements
 and the standard fixed `camera_link -> camera_optical_frame` rotation.
@@ -59,15 +62,16 @@ cp config/base-calibration-measurements.example.json \
   config/local/base_calibration_measurements.json
 ```
 
-Mark the starting axle midpoint and heading with tape. Run every command twice,
-letting the robot reach a complete stop before measuring. Enter positive travel
-distances for forward/reverse and positive turn magnitudes for left/right.
+Mark the starting tread midpoint and heading approximately. Run every command
+once, letting the robot reach a complete stop before measuring. Enter positive travel
+distances for forward/reverse, signed straight-run heading change (left positive,
+right negative), and positive turn magnitudes for left/right.
 
 ```bash
-python3 scripts/send_motor_command.py forward --duration 2 --power 1
-python3 scripts/send_motor_command.py reverse --duration 2 --power 1
-python3 scripts/send_motor_command.py left    --duration 2 --power 1
-python3 scripts/send_motor_command.py right   --duration 2 --power 1
+python3 scripts/send_motor_command.py forward --duration 3 --power 1
+python3 scripts/send_motor_command.py reverse --duration 3 --power 1
+python3 scripts/send_motor_command.py left    --duration 3 --power 1
+python3 scripts/send_motor_command.py right   --duration 3 --power 1
 ```
 
 If two seconds would leave the clear test area, use the same shorter duration
@@ -82,7 +86,7 @@ python3 scripts/calibrate_base.py \
 ```
 
 This produces `config/local/base_calibration.yaml` and a JSON summary. It fits
-direction-specific full-scale wheel speeds from straight and pivot trials,
+an effective skid-steer width and direction-specific full-scale tread speeds,
 generates the measured camera transform, and replaces the provisional circular
 Nav2 radius with a conservative rectangular footprint. A coefficient of
 variation above 20% produces `CALIBRATION_QUALITY=REVIEW` instead of silently

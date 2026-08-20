@@ -186,3 +186,17 @@
   wheel asymmetry, stalls, and collisions. Nav2 remains the established planner
   and controller; subsequent fusion and collision gating should use standard ROS
   components rather than custom replacements.
+
+## D-019 - Calibrate the rebuilt base as skid steer with coarse extrinsics
+
+- **Status:** accepted, 2026-08-20
+- **Decision:** model the rebuilt LEGO tread base through the standard
+  differential `/cmd_vel` interface, but fit its effective track width from one
+  straight, reverse, left-pivot, and right-pivot observation. Use a conservative
+  footprint margin and approximate C920 extrinsics rather than requiring survey-
+  grade measurements after every LEGO adjustment.
+- **Reason:** tread scrub determines turning response more than the measured
+  outside width, while the camera mount may shift around three inches forward
+  and six inches high. Coarse, repeatable calibration is more useful here than
+  false geometric precision; visual pose correction remains responsible for
+  longer-term localization.

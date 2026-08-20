@@ -3,6 +3,53 @@
 Keep entries concise and evidence based. Link detailed experiment records when
 they exist.
 
+## 2026-08-20 - Rebuilt tread polarity corrected
+
+### Observed
+
+- The first three-second command was invalid as a calibration sample because
+  the robot was being adjusted when it started.
+- The semantic `forward` command moved the rebuilt tread base backward, showing
+  that the motor orientation changed during the rebuild.
+
+### Changed
+
+- Added independent left/right inversion flags at the Pi motor-service boundary
+  so `/cmd_vel` and calibration tools retain standard forward/left semantics.
+- Selected both inversion flags for the current rebuilt base. Direction must be
+  reconfirmed with a short bounded command before restarting calibration.
+- Deployed the inverted service and confirmed it remained active with the new
+  arguments. The first stop-only probe received no acknowledgement; service
+  status showed it running normally, and an immediate retry acknowledged the
+  stop. No movement command was sent after the invalid trial.
+- A subsequent 1.5-second semantic-forward check moved physically forward. The
+  first measured three-second forward run delivered an acknowledged stop and
+  ended about 21 in forward and 9 in right at roughly 15-20 degrees right. This
+  is recorded as an approximate 0.58 m displacement and -17.5 degree heading
+  change; the solver now uses straight-run heading to retain startup asymmetry.
+- The three-second reverse run ended about 29 in backward and 3 in right with
+  an approximately 5-degree counterclockwise heading change, recorded as
+  0.740 m and +5 degrees. Reverse travel was faster and straighter than forward.
+- The first semantic left-pivot trial instead rotated approximately 330 degrees
+  clockwise, ending near the starting 11-o'clock heading. The sample was
+  discarded; straight polarity was correct, identifying swapped left/right
+  tread channels after the rebuild. The Pi boundary now also swaps sides.
+- After deploying the side swap, a 1.5-second check turned counterclockwise as
+  intended. The repeated measured three-second left pivot ended around the
+  2:00-2:30 clock heading after turning counterclockwise, recorded as 293 degrees.
+- The measured three-second right pivot turned clockwise to about the 11-o'clock
+  heading, matching the earlier observed endpoint and recorded as 330 degrees.
+- The resulting coarse fit passed its repeatability gate. It estimated a 0.244 m
+  effective skid-steer width, direction-specific full-scale tread speeds of
+  0.194-0.239 m/s, a 0.148 m conservative footprint radius, and at most 9.3%
+  coefficient of variation across each fitted tread/direction observation.
+- The generated real-base ROS parameters launched against the Pi for five
+  seconds in the expected disabled/open-loop state and sent no motion command.
+- A repeated three-second 50% forward command moved about 10 in forward and
+  2 in right, a 0.259 m displacement. This is 44.7% of the 0.58 m full-power
+  displacement, close enough to retain the linear pulse-density model for
+  initial low-speed control without overfitting one validation sample.
+
 ## 2026-08-20 - Real-base calibration and Nav2 handoff implemented
 
 ### Verified
@@ -10,7 +57,7 @@ they exist.
 - Added scan-window pulse-density control to the Pi service; 0.5 duty selected
   exactly four of eight synthetic remote scan windows, while repeated 20 Hz
   network refreshes preserved phase.
-- All 19 host-side motor, GPIO, protocol, and calibration tests passed.
+- All 20 host-side motor, GPIO, protocol, and calibration tests passed.
 - The ROS Jazzy image built and all 11 navigation-package tests passed.
 - A synthetic calibrated base launch stayed disarmed, published the explicit
   open-loop warning, and exited cleanly after a three-second smoke test.
@@ -24,8 +71,12 @@ they exist.
 
 ### Changed
 
-- Added a repeatable measurement worksheet and solver for wheel separation,
-  footprint, four direction-specific wheel rates, and the rigid C920 transform.
+- Added a repeatable measurement worksheet and solver for effective skid-steer
+  width, footprint, four direction-specific tread rates, and the C920 transform.
+- Recorded the rebuilt base as approximately 6.5 x 6 in, including its rear
+  extension. Recorded the adjustable C920 mount as centered, about 3 in forward
+  and 6 in high, with a nominal 5-degree downward pitch and conservative 1 in
+  footprint margin.
 - Added the initially disarmed ROS `/cmd_vel` to UDP bridge, high-covariance
   command-integrated `/odom`, TF publication, acknowledgement timeout, enable
   service, and latched emergency stop.
@@ -35,8 +86,9 @@ they exist.
 
 ### Next physical evidence
 
-- Measure geometry and record two timed trials for forward, reverse, pivot-left,
-  and pivot-right using `docs/BASE_CALIBRATION.md`.
+- Record one three-second timed trial for forward, reverse, pivot-left, and
+  pivot-right using `docs/BASE_CALIBRATION.md`; the longer interval averages
+  the observed variable motor startup delay. Repeat only an obviously odd run.
 - Validate 0.5-duty motion after solving the full-power calibration, then repeat
   the rigidly mounted natural-scene DPV-SLAM route for metric scale alignment.
 

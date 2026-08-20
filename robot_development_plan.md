@@ -227,10 +227,11 @@ Once the camera mapper works, integrate the Raspberry Pi and base.
 - [x] Add a calibration-gated ROS base bridge with fractional wheel commands,
   disarmed startup, stale-command and acknowledgement stops, open-loop odometry,
   and the measured camera transform boundary.
-- [ ] Measure the assembled footprint, wheel geometry, and camera-to-base
-  transform.
-- [ ] Fit and validate direction-specific motion rates; determine whether the
-  four-wire motors expose usable encoder feedback.
+- [x] Record a conservative 6.5 x 6 in tread-base footprint and coarse,
+  adjustable C920 transform at about 3 in forward and 6 in high.
+- [x] Fit direction-specific tread rates and effective skid-steer width, then
+  validate 50% forward duty against the full-power displacement.
+- [ ] Determine whether the four-wire motors expose usable encoder feedback.
 - [ ] Replace loopback with the Pi base adapter plus metric visual/encoder
   correction; do not use command-integrated odometry alone for autonomy.
 

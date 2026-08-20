@@ -72,7 +72,13 @@ def actions_for_wheels(left: float, right: float, deadband: float = 0.05) -> tup
 
 
 class MatrixMotorRuntime:
-    def __init__(self, gpio_module: Any | None = None) -> None:
+    def __init__(
+        self,
+        gpio_module: Any | None = None,
+        invert_left: bool = False,
+        invert_right: bool = False,
+        swap_sides: bool = False,
+    ) -> None:
         if gpio_module is None:
             try:
                 import RPi.GPIO as gpio_module  # type: ignore[import-not-found]
@@ -80,6 +86,9 @@ class MatrixMotorRuntime:
                 raise RuntimeError("RPi.GPIO is unavailable; run the service on the Pi") from exc
 
         self.gpio = gpio_module
+        self.invert_left = invert_left
+        self.invert_right = invert_right
+        self.swap_sides = swap_sides
         self.gpio.setwarnings(False)
         self.gpio.setmode(self.gpio.BCM)
         self.all_pins = sorted({pin for pair in MATRIX_PINS.values() for pin in pair})
@@ -95,6 +104,12 @@ class MatrixMotorRuntime:
         self.window_counts = {name: 0 for name in MATRIX_PINS}
 
     def set_wheels(self, left: float, right: float) -> tuple[str, ...]:
+        if self.swap_sides:
+            left, right = right, left
+        if self.invert_left:
+            left = -left
+        if self.invert_right:
+            right = -right
         new_actions = actions_for_wheels(left, right)
         if new_actions != self.actions:
             self.release_columns()
@@ -171,8 +186,19 @@ def response_payload(
     return json.dumps(document, separators=(",", ":")).encode("utf-8")
 
 
-def run_server(bind: str, port: int, watchdog_seconds: float) -> int:
-    runtime = MatrixMotorRuntime()
+def run_server(
+    bind: str,
+    port: int,
+    watchdog_seconds: float,
+    invert_left: bool = False,
+    invert_right: bool = False,
+    swap_sides: bool = False,
+) -> int:
+    runtime = MatrixMotorRuntime(
+        invert_left=invert_left,
+        invert_right=invert_right,
+        swap_sides=swap_sides,
+    )
     server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     server.bind((bind, port))
     server.setblocking(False)
@@ -190,7 +216,9 @@ def run_server(bind: str, port: int, watchdog_seconds: float) -> int:
     signal.signal(signal.SIGTERM, request_stop)
     print(
         f"House Bot motor service listening on {bind}:{port}; "
-        f"watchdog={watchdog_seconds:.3f}s",
+        f"watchdog={watchdog_seconds:.3f}s "
+        f"invert_left={invert_left} invert_right={invert_right} "
+        f"swap_sides={swap_sides}",
         flush=True,
     )
 
@@ -250,6 +278,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bind", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--watchdog", type=float, default=DEFAULT_WATCHDOG_SECONDS)
+    parser.add_argument("--invert-left", action="store_true")
+    parser.add_argument("--invert-right", action="store_true")
+    parser.add_argument("--swap-sides", action="store_true")
     return parser
 
 
@@ -259,7 +290,14 @@ def main() -> int:
         raise SystemExit("--port must be between 1 and 65535")
     if not 0.1 <= args.watchdog <= 2.0:
         raise SystemExit("--watchdog must be between 0.1 and 2.0 seconds")
-    return run_server(args.bind, args.port, args.watchdog)
+    return run_server(
+        args.bind,
+        args.port,
+        args.watchdog,
+        args.invert_left,
+        args.invert_right,
+        args.swap_sides,
+    )
 
 
 if __name__ == "__main__":

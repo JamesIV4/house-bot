@@ -18,7 +18,6 @@ SPEC.loader.exec_module(calibrate)
 def measurement_document():
     return {
         "geometry": {
-            "wheel_separation_m": 0.2,
             "footprint_length_m": 0.3,
             "footprint_width_m": 0.2,
             "footprint_safety_margin_m": 0.02,
@@ -55,10 +54,11 @@ def measurement_document():
 class BaseCalibrationTests(unittest.TestCase):
     def test_solver_combines_straight_and_pivot_trials(self) -> None:
         solution = calibrate.solve_calibration(measurement_document())
-        self.assertAlmostEqual(solution["left_forward_mps"], 0.19)
-        self.assertAlmostEqual(solution["left_reverse_mps"], 0.19)
-        self.assertAlmostEqual(solution["right_forward_mps"], 0.20)
-        self.assertAlmostEqual(solution["right_reverse_mps"], 0.18)
+        self.assertAlmostEqual(solution["wheel_separation_m"], 0.2005555556)
+        self.assertAlmostEqual(solution["left_forward_mps"], 0.19025)
+        self.assertAlmostEqual(solution["left_reverse_mps"], 0.1902777778)
+        self.assertAlmostEqual(solution["right_forward_mps"], 0.2002777778)
+        self.assertAlmostEqual(solution["right_reverse_mps"], 0.18025)
         self.assertAlmostEqual(solution["camera"]["pitch_deg"], -5.0)
 
     def test_rendered_parameters_are_calibration_gated(self) -> None:
@@ -69,11 +69,28 @@ class BaseCalibrationTests(unittest.TestCase):
         self.assertIn("footprint:", rendered)
         self.assertIn("camera_pitch_rad: -0.087266", rendered)
 
-    def test_missing_repeated_trials_is_rejected(self) -> None:
+    def test_single_coarse_trial_per_motion_is_accepted(self) -> None:
         document = measurement_document()
-        document["trials"]["left"] = document["trials"]["left"][:1]
-        with self.assertRaisesRegex(ValueError, "at least two"):
+        for motion in document["trials"]:
+            document["trials"][motion] = document["trials"][motion][:1]
+        solution = calibrate.solve_calibration(document)
+        self.assertGreater(solution["wheel_separation_m"], 0.0)
+
+    def test_missing_motion_trial_is_rejected(self) -> None:
+        document = measurement_document()
+        document["trials"]["left"] = []
+        with self.assertRaisesRegex(ValueError, "at least one"):
             calibrate.solve_calibration(document)
+
+    def test_forward_heading_change_captures_tread_asymmetry(self) -> None:
+        document = measurement_document()
+        for motion in document["trials"]:
+            document["trials"][motion] = document["trials"][motion][:1]
+        document["trials"]["forward"][0]["heading_change_deg"] = -15.0
+        solution = calibrate.solve_calibration(document)
+        self.assertGreater(
+            solution["left_forward_mps"], solution["right_forward_mps"]
+        )
 
 
 if __name__ == "__main__":

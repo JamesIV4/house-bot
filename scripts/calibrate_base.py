@@ -36,13 +36,25 @@ def trial_speed(trial: dict[str, Any], measurement_name: str) -> float:
     return measurement / duration / power
 
 
+def trial_heading_rate(trial: dict[str, Any]) -> float:
+    value = trial.get("heading_change_deg", 0.0)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("heading_change_deg must be a number")
+    heading_deg = float(value)
+    if not math.isfinite(heading_deg) or not -180.0 <= heading_deg <= 180.0:
+        raise ValueError("heading_change_deg must be finite and between -180 and 180")
+    duration = positive_number(trial, "duration_s")
+    power = float(trial.get("power", 1.0))
+    return math.radians(heading_deg) / duration / power
+
+
 def required_trials(document: dict[str, Any], motion: str) -> list[dict[str, Any]]:
     trials = document.get("trials")
     if not isinstance(trials, dict):
         raise ValueError("trials must be an object")
     values = trials.get(motion)
-    if not isinstance(values, list) or len(values) < 2:
-        raise ValueError(f"trials.{motion} must contain at least two trials")
+    if not isinstance(values, list) or not values:
+        raise ValueError(f"trials.{motion} must contain at least one trial")
     if not all(isinstance(value, dict) for value in values):
         raise ValueError(f"every trials.{motion} entry must be an object")
     return values
@@ -53,7 +65,6 @@ def solve_calibration(document: dict[str, Any]) -> dict[str, Any]:
     camera = document.get("camera_transform")
     if not isinstance(geometry, dict) or not isinstance(camera, dict):
         raise ValueError("geometry and camera_transform must be objects")
-    track = positive_number(geometry, "wheel_separation_m")
     length = positive_number(geometry, "footprint_length_m")
     width = positive_number(geometry, "footprint_width_m")
     margin_value = geometry.get("footprint_safety_margin_m", 0.02)
@@ -63,8 +74,10 @@ def solve_calibration(document: dict[str, Any]) -> dict[str, Any]:
     if not 0.0 <= margin <= 0.10:
         raise ValueError("footprint_safety_margin_m must be between 0 and 0.10")
 
-    forward = [trial_speed(trial, "distance_m") for trial in required_trials(document, "forward")]
-    reverse = [trial_speed(trial, "distance_m") for trial in required_trials(document, "reverse")]
+    forward_trials = required_trials(document, "forward")
+    reverse_trials = required_trials(document, "reverse")
+    forward = [trial_speed(trial, "distance_m") for trial in forward_trials]
+    reverse = [trial_speed(trial, "distance_m") for trial in reverse_trials]
     left_angular = [
         math.radians(trial_speed(trial, "angle_deg"))
         for trial in required_trials(document, "left")
@@ -73,14 +86,46 @@ def solve_calibration(document: dict[str, Any]) -> dict[str, Any]:
         math.radians(trial_speed(trial, "angle_deg"))
         for trial in required_trials(document, "right")
     ]
+    forward_speed = float(statistics.median(forward))
+    reverse_speed = float(statistics.median(reverse))
+    # A skid-steer base rotates through tread scrub, so its useful kinematic
+    # width is generally not the tape-measured tread spacing. Fit an effective
+    # track width from straight speed and observed pivot rate instead.
+    track_observations = [
+        (forward_speed + reverse_speed) / angular
+        for angular in left_angular + right_angular
+    ]
+    track = float(statistics.median(track_observations))
+    if not 0.04 <= track <= 1.0:
+        raise ValueError(
+            f"fitted effective track width is implausible: {track:.3f} m"
+        )
+    forward_left = [
+        speed - trial_heading_rate(trial) * track * 0.5
+        for speed, trial in zip(forward, forward_trials)
+    ]
+    forward_right = [
+        speed + trial_heading_rate(trial) * track * 0.5
+        for speed, trial in zip(forward, forward_trials)
+    ]
+    reverse_left = [
+        speed + trial_heading_rate(trial) * track * 0.5
+        for speed, trial in zip(reverse, reverse_trials)
+    ]
+    reverse_right = [
+        speed - trial_heading_rate(trial) * track * 0.5
+        for speed, trial in zip(reverse, reverse_trials)
+    ]
     left_pivot_wheel = [value * track * 0.5 for value in left_angular]
     right_pivot_wheel = [value * track * 0.5 for value in right_angular]
     observations = {
-        "left_forward_mps": forward + right_pivot_wheel,
-        "left_reverse_mps": reverse + left_pivot_wheel,
-        "right_forward_mps": forward + left_pivot_wheel,
-        "right_reverse_mps": reverse + right_pivot_wheel,
+        "left_forward_mps": forward_left + right_pivot_wheel,
+        "left_reverse_mps": reverse_left + left_pivot_wheel,
+        "right_forward_mps": forward_right + left_pivot_wheel,
+        "right_reverse_mps": reverse_right + right_pivot_wheel,
     }
+    if any(value <= 0.0 for values in observations.values() for value in values):
+        raise ValueError("measured heading change implies a non-positive tread speed")
     wheel_speeds = {
         name: float(statistics.median(values)) for name, values in observations.items()
     }
@@ -109,6 +154,7 @@ def solve_calibration(document: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "wheel_separation_m": track,
+        "effective_track_width_observations_m": track_observations,
         **wheel_speeds,
         "camera": camera_values,
         "footprint": footprint,
@@ -182,6 +228,7 @@ def main() -> int:
     print(f"Wrote ROS parameters: {args.output}")
     print(f"Wrote calibration summary: {summary_path}")
     print(f"Conservative Nav2 radius: {solution['robot_radius_m']:.3f} m")
+    print(f"Skid-steer effective track width: {solution['wheel_separation_m']:.3f} m")
     high_variation = {
         name: value
         for name, value in solution["observation_coefficient_of_variation"].items()

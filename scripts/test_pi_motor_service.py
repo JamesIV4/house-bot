@@ -159,6 +159,65 @@ class PiMotorServiceTests(unittest.TestCase):
         runtime.set_wheels(0.25, 0.0)
         self.assertEqual(runtime.duty_accumulator["left-forward"], 0.25)
 
+    def test_rebuilt_treads_can_be_inverted_without_changing_protocol(self) -> None:
+        class NoopGpio:
+            BCM = "BCM"
+            IN = "IN"
+            OUT = "OUT"
+            PUD_OFF = "PUD_OFF"
+
+            def setwarnings(self, _enabled):
+                pass
+
+            def setmode(self, _mode):
+                pass
+
+            def setup(self, _pin, _mode, **_kwargs):
+                pass
+
+            def cleanup(self, _pins):
+                pass
+
+        runtime = service.MatrixMotorRuntime(
+            NoopGpio(), invert_left=True, invert_right=True
+        )
+        self.assertEqual(
+            runtime.set_wheels(1.0, 1.0),
+            ("left-reverse", "right-reverse"),
+        )
+        self.assertEqual(runtime.action_levels["left-reverse"], 1.0)
+        self.assertEqual(runtime.action_levels["right-reverse"], 1.0)
+
+    def test_rebuilt_tread_channels_can_be_swapped(self) -> None:
+        class NoopGpio:
+            BCM = "BCM"
+            IN = "IN"
+            OUT = "OUT"
+            PUD_OFF = "PUD_OFF"
+
+            def setwarnings(self, _enabled):
+                pass
+
+            def setmode(self, _mode):
+                pass
+
+            def setup(self, _pin, _mode, **_kwargs):
+                pass
+
+            def cleanup(self, _pins):
+                pass
+
+        runtime = service.MatrixMotorRuntime(
+            NoopGpio(),
+            invert_left=True,
+            invert_right=True,
+            swap_sides=True,
+        )
+        self.assertEqual(
+            runtime.set_wheels(-1.0, 1.0),
+            ("left-reverse", "right-forward"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
