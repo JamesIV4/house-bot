@@ -200,3 +200,19 @@
   and six inches high. Coarse, repeatable calibration is more useful here than
   false geometric precision; visual pose correction remains responsible for
   longer-term localization.
+
+## D-020 - Reject fractional control through the original remote
+
+- **Status:** accepted, 2026-08-20
+- **Decision:** treat the original-remote bridge as binary full-power/stop
+  actuation. Reject fractional wheel commands by default and prevent the ROS
+  base bridge from arming until proportional two-tread control is independently
+  verified. Keep Nav2 as the autonomy stack, but hand it off through a standard
+  proportional motor/feedback interface rather than adapting it to unreliable
+  pulse-density motion.
+- **Reason:** a single three-second 50% forward trial appeared approximately
+  proportional, but three subsequent timestamped routes showed that most 50%
+  segments activated only the left tread. The third route repeated the result
+  after the remote was explicitly woken, ruling out receiver timeout as the
+  explanation. UDP acknowledgement proves only that the GPIO command was
+  received; it does not prove physical tread motion.

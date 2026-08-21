@@ -51,6 +51,7 @@ class HouseBotBase(Node):
     def __init__(self) -> None:
         super().__init__("house_bot_base")
         self.declare_parameter("calibrated", False)
+        self.declare_parameter("proportional_control_verified", False)
         self.declare_parameter("pi_host", "192.168.0.241")
         self.declare_parameter("pi_port", 8765)
         self.declare_parameter("control_rate_hz", 20.0)
@@ -85,6 +86,9 @@ class HouseBotBase(Node):
             right_reverse_mps=float(self.get_parameter("right_reverse_mps").value),
         )
         self.calibration.validate()
+        self.proportional_control_verified = bool(
+            self.get_parameter("proportional_control_verified").value
+        )
 
         pi_host = str(self.get_parameter("pi_host").value)
         self.pi_address = (
@@ -162,6 +166,12 @@ class HouseBotBase(Node):
             self.get_logger().error("Emergency stop asserted; base disabled")
 
     def on_enable(self, request: SetBool.Request, response: SetBool.Response):
+        if request.data and not self.proportional_control_verified:
+            response.success = False
+            response.message = (
+                "base cannot be armed: proportional two-tread control is not verified"
+            )
+            return response
         if request.data and self.estopped:
             response.success = False
             response.message = "estop is latched; restart the base driver after checking the robot"

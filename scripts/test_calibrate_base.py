@@ -66,6 +66,7 @@ class BaseCalibrationTests(unittest.TestCase):
             calibrate.solve_calibration(measurement_document())
         )
         self.assertIn("calibrated: true", rendered)
+        self.assertIn("proportional_control_verified: false", rendered)
         self.assertIn("footprint:", rendered)
         self.assertIn("camera_pitch_rad: -0.087266", rendered)
 

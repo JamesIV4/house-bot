@@ -22,12 +22,13 @@ localization and a live obstacle source remain autonomy gates.
   disables itself if motor acknowledgements stop, and supports a latched
   `/house_bot/estop` input.
 
-## 1. Deploy fractional wheel control
+## 1. Deploy binary wheel control
 
-The tested motor service now honors command magnitude using pulse density over
-the remote's 25 Hz scan windows. A magnitude of `1.0` retains the already
-verified full-power behavior; lower magnitudes select a corresponding fraction
-of scan windows.
+The original remote reliably exposes full-power and stop commands. Repeated
+50% pulse-density routes usually activated only the left tread, even after the
+remote was awake. The service therefore rejects fractional commands by default.
+Pulse density remains available only behind an explicitly experimental service
+flag and must not be used for calibration, ROS control, or autonomy.
 
 ```bash
 cd /home/james/Repos/house-bot
@@ -115,24 +116,28 @@ Disable or stop it with:
 ./scripts/base_control.sh stop
 ```
 
-The next acceptance run should validate `0.5` power in each straight direction
-and both pivots before Nav2 is connected. Compare observed half-power motion
-with the fitted rate; if the toy receiver/motor response is materially
-nonlinear, add measured duty breakpoints rather than pretending it is linear.
+The ROS bridge deliberately refuses to arm while
+`proportional_control_verified` is false. The current original-remote path is
+appropriate for supervised, bounded full-power experiments only; it cannot
+reproduce Nav2's continuous velocity commands.
 
 ## Autonomy handoff
 
 After the base calibration passes:
 
-1. repeat the measured `config/dpvo-navigation.yaml` route from a natural scene
-   with the camera rigidly mounted;
+1. repeat a timestamped full-power `config/dpvo-navigation.yaml` route from a
+   natural scene, with every segment at least 1.5 seconds and an observer
+   confirming both treads engaged;
 2. align DPV-SLAM translation scale to the measured base motion and publish the
    live metric pose through the ROS frame tree;
-3. fuse metric visual pose and base motion using `robot_localization`, with a
+3. replace the binary toy-remote actuation path with a proportional motor
+   driver and wheel feedback, then expose it through `ros2_control`'s
+   differential-drive controller;
+4. fuse metric visual pose and wheel motion using `robot_localization`, with a
    single owner for `odom -> base_link`;
-4. load a real occupancy map and provide `map -> odom`;
-5. add a live depth/range obstacle layer and Nav2 collision monitor;
-6. only then run a low-speed, supervised Nav2 point goal.
+5. load a real occupancy map and provide `map -> odom`;
+6. add a live depth/range obstacle layer and Nav2 collision monitor;
+7. only then run a low-speed, supervised Nav2 point goal.
 
 This sequence keeps the custom work limited to the unusual remote bridge and
 DPV-SLAM adapter. Standard ROS components own fusion, frames, costmaps,

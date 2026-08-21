@@ -15,6 +15,10 @@ MOTIONS = {
     "reverse": (-1.0, -1.0),
     "left": (-1.0, 1.0),
     "right": (1.0, -1.0),
+    "left-tread-forward": (1.0, 0.0),
+    "left-tread-reverse": (-1.0, 0.0),
+    "right-tread-forward": (0.0, 1.0),
+    "right-tread-reverse": (0.0, -1.0),
     "stop": (0.0, 0.0),
 }
 
@@ -33,11 +37,12 @@ def send_motion(
     right: float,
     duration: float,
     rate_hz: float,
-) -> tuple[int, int, bool]:
+) -> tuple[int, int, bool, tuple[str, ...]]:
     interval = 1.0 / rate_hz
     deadline = time.monotonic() + duration
     sequence = 0
     acknowledged_sequences: set[int] = set()
+    rejection_errors: set[str] = set()
     session = secrets.token_hex(8)
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setblocking(False)
@@ -56,6 +61,10 @@ def send_motion(
                 response_sequence = response.get("sequence")
                 if isinstance(response_sequence, int):
                     acknowledged_sequences.add(response_sequence)
+            elif response.get("session") == session:
+                error = response.get("error")
+                if isinstance(error, str):
+                    rejection_errors.add(error)
 
     try:
         while True:
@@ -85,7 +94,16 @@ def send_motion(
             time.sleep(0.01)
         sock.close()
 
-    return sequence, len(acknowledged_sequences), stop_sequence in acknowledged_sequences
+    drive_acknowledgements = sum(
+        acknowledged_sequence < stop_sequence
+        for acknowledged_sequence in acknowledged_sequences
+    )
+    return (
+        sequence,
+        drive_acknowledgements,
+        stop_sequence in acknowledged_sequences,
+        tuple(sorted(rejection_errors)),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -98,7 +116,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--power",
         type=float,
         default=1.0,
-        help="wheel command magnitude from 0.05 to 1.0",
+        help="wheel command magnitude; use 1.0 for the verified binary mode",
+    )
+    parser.add_argument(
+        "--experimental-pulse-density",
+        action="store_true",
+        help="allow an unverified fractional command (requires matching Pi service flag)",
     )
     parser.add_argument("--rate", type=float, default=20.0, help="command refresh rate in Hz")
     return parser
@@ -110,12 +133,17 @@ def main() -> int:
         raise SystemExit("--duration must be non-negative")
     if not 0.05 <= args.power <= 1.0:
         raise SystemExit("--power must be between 0.05 and 1.0")
+    if args.power != 1.0 and not args.experimental_pulse_density:
+        raise SystemExit(
+            "fractional power is physically unverified; use full power or explicitly "
+            "select --experimental-pulse-density"
+        )
     if not 5.0 <= args.rate <= 50.0:
         raise SystemExit("--rate must be between 5 and 50 Hz")
     left, right = MOTIONS[args.motion]
     left *= args.power
     right *= args.power
-    packets, acknowledgements, stop_acknowledged = send_motion(
+    packets, acknowledgements, stop_acknowledged, errors = send_motion(
         args.host,
         args.port,
         left,
@@ -127,7 +155,10 @@ def main() -> int:
         f"Sent {packets} command packets, received {acknowledgements} acknowledgements; "
         f"stop acknowledged={stop_acknowledged}."
     )
-    return 0 if acknowledgements > 0 and stop_acknowledged else 2
+    if errors:
+        print("Rejected by motor service: " + "; ".join(errors))
+    drive_succeeded = packets == 0 or acknowledgements > 0
+    return 0 if drive_succeeded and stop_acknowledged and not errors else 2
 
 
 if __name__ == "__main__":

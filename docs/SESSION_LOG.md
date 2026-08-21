@@ -3,6 +3,45 @@
 Keep entries concise and evidence based. Link detailed experiment records when
 they exist.
 
+## 2026-08-20 - Fractional original-remote control rejected
+
+### Observed
+
+- Three timestamped 50% pulse-density routes were attempted. During most short
+  segments only the left tread moved.
+- The third route was repeated after the remote was explicitly woken and showed
+  the same physical failure, so receiver timeout does not explain the tread
+  asymmetry.
+- The third capture still provided healthy SLAM evidence: DPV-SLAM initialized,
+  processed 1,200 poses, retained 22 keyframes, and sustained 26.80 tracking
+  FPS. It is rejected as metric-scale evidence because the commanded physical
+  motion was not executed by both treads.
+- All route packets and stops were acknowledged. This confirms transport and
+  watchdog behavior, not physical motor execution.
+
+### Changed
+
+- Made the Pi motor service binary full-power/stop by default. Fractional
+  magnitudes are rejected unless the service is started with an explicitly
+  experimental pulse-density flag.
+- Corrected the command client so a stop acknowledgement cannot make a route
+  appear successful when every drive packet was rejected.
+- Added a `proportional_control_verified` gate that prevents the ROS base bridge
+  from arming under the current actuation model.
+- Changed the reusable visual-scale route to full-power segments of at least
+  1.5 seconds. The scale tool rejects legacy/fractional routes, requires four
+  agreeing straight legs, and requires explicit operator confirmation that both
+  treads moved.
+
+### Next evidence
+
+- Run one observer-confirmed full-power timestamped route for DPV-SLAM metric
+  scale. Treat the result as visual calibration only, not authorization for
+  autonomous driving.
+- Identify a proportional motor driver and wheel-feedback path suitable for the
+  standard ROS 2 differential-drive controller before connecting the real base
+  to Nav2.
+
 ## 2026-08-20 - Rebuilt tread polarity corrected
 
 ### Observed
@@ -46,9 +85,9 @@ they exist.
 - The generated real-base ROS parameters launched against the Pi for five
   seconds in the expected disabled/open-loop state and sent no motion command.
 - A repeated three-second 50% forward command moved about 10 in forward and
-  2 in right, a 0.259 m displacement. This is 44.7% of the 0.58 m full-power
-  displacement, close enough to retain the linear pulse-density model for
-  initial low-speed control without overfitting one validation sample.
+  2 in right, a 0.259 m displacement. Later multi-segment tests showed that
+  this single endpoint was misleading: most fractional commands activated only
+  the left tread. D-020 supersedes the earlier linear-model conclusion.
 
 ## 2026-08-20 - Real-base calibration and Nav2 handoff implemented
 
@@ -86,11 +125,8 @@ they exist.
 
 ### Next physical evidence
 
-- Record one three-second timed trial for forward, reverse, pivot-left, and
-  pivot-right using `docs/BASE_CALIBRATION.md`; the longer interval averages
-  the observed variable motor startup delay. Repeat only an obviously odd run.
-- Validate 0.5-duty motion after solving the full-power calibration, then repeat
-  the rigidly mounted natural-scene DPV-SLAM route for metric scale alignment.
+- Repeat an observer-confirmed, full-power natural-scene DPV-SLAM route for
+  metric scale alignment. Do not use fractional pulse-density commands.
 
 ## 2026-08-20 - One-second directional motor command test
 

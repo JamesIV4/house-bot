@@ -58,6 +58,19 @@ def parse_command(payload: bytes) -> WheelCommand:
     )
 
 
+def require_binary_wheels(command: WheelCommand) -> None:
+    """Reject magnitudes the toy receiver cannot reproduce reliably."""
+    for name, value in (("left", command.left), ("right", command.right)):
+        if math.isclose(value, 0.0, abs_tol=1e-9):
+            continue
+        if math.isclose(abs(value), 1.0, abs_tol=1e-9):
+            continue
+        raise ValueError(
+            f"{name} magnitude must be 0 or 1; fractional pulse-density "
+            "control is not physically verified"
+        )
+
+
 def actions_for_wheels(left: float, right: float, deadband: float = 0.05) -> tuple[str, ...]:
     actions: list[str] = []
     if left > deadband:
@@ -193,6 +206,7 @@ def run_server(
     invert_left: bool = False,
     invert_right: bool = False,
     swap_sides: bool = False,
+    allow_experimental_pulse_density: bool = False,
 ) -> int:
     runtime = MatrixMotorRuntime(
         invert_left=invert_left,
@@ -218,7 +232,8 @@ def run_server(
         f"House Bot motor service listening on {bind}:{port}; "
         f"watchdog={watchdog_seconds:.3f}s "
         f"invert_left={invert_left} invert_right={invert_right} "
-        f"swap_sides={swap_sides}",
+        f"swap_sides={swap_sides} "
+        f"command_mode={'experimental-pulse-density' if allow_experimental_pulse_density else 'binary-only'}",
         flush=True,
     )
 
@@ -239,6 +254,8 @@ def run_server(
                     command: WheelCommand | None = None
                     try:
                         command = parse_command(payload)
+                        if not allow_experimental_pulse_density:
+                            require_binary_wheels(command)
                         previous = client_sequences.get(address)
                         stale = (
                             previous is not None
@@ -281,6 +298,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--invert-left", action="store_true")
     parser.add_argument("--invert-right", action="store_true")
     parser.add_argument("--swap-sides", action="store_true")
+    parser.add_argument(
+        "--allow-experimental-pulse-density",
+        action="store_true",
+        help="accept fractional wheel magnitudes; unsafe until both treads are verified",
+    )
     return parser
 
 
@@ -297,6 +319,7 @@ def main() -> int:
         args.invert_left,
         args.invert_right,
         args.swap_sides,
+        args.allow_experimental_pulse_density,
     )
 
 

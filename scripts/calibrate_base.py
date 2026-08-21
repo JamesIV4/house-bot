@@ -178,6 +178,7 @@ def render_ros_parameters(solution: dict[str, Any]) -> str:
         "house_bot_base:",
         "  ros__parameters:",
         "    calibrated: true",
+        "    proportional_control_verified: false",
         f"    wheel_separation_m: {yaml_number(solution['wheel_separation_m'])}",
         f"    left_forward_mps: {yaml_number(solution['left_forward_mps'])}",
         f"    left_reverse_mps: {yaml_number(solution['left_reverse_mps'])}",

@@ -47,6 +47,18 @@ class PiMotorServiceTests(unittest.TestCase):
             with self.subTest(packet=packet), self.assertRaises(ValueError):
                 service.parse_command(packet)
 
+    def test_binary_mode_rejects_fractional_magnitudes(self) -> None:
+        service.require_binary_wheels(
+            service.WheelCommand("abc", 1, 1.0, -1.0)
+        )
+        service.require_binary_wheels(
+            service.WheelCommand("abc", 2, 0.0, 0.0)
+        )
+        with self.assertRaisesRegex(ValueError, "fractional pulse-density"):
+            service.require_binary_wheels(
+                service.WheelCommand("abc", 3, 0.5, 1.0)
+            )
+
     def test_wheel_signs_select_one_direction_per_side(self) -> None:
         self.assertEqual(
             service.actions_for_wheels(1.0, 1.0),
@@ -70,6 +82,10 @@ class PiMotorServiceTests(unittest.TestCase):
                 "reverse": (-1.0, -1.0),
                 "left": (-1.0, 1.0),
                 "right": (1.0, -1.0),
+                "left-tread-forward": (1.0, 0.0),
+                "left-tread-reverse": (-1.0, 0.0),
+                "right-tread-forward": (0.0, 1.0),
+                "right-tread-reverse": (0.0, -1.0),
                 "stop": (0.0, 0.0),
             },
         )

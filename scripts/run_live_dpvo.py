@@ -223,6 +223,8 @@ def main() -> int:
     gpu_latencies_ms: list[float] = []
     newest_queue_age_ms: list[float] = []
     decoder_to_pose_age_ms: list[float] = []
+    first_processed_arrival: float | None = None
+    last_processed_arrival: float | None = None
     model_load_s = 0.0
     tracking_wall_s = 0.0
     start_event = torch.cuda.Event(enable_timing=True)
@@ -233,6 +235,9 @@ def main() -> int:
             while len(processed_sequences) < args.max_poses:
                 iteration_start = time.perf_counter()
                 sequence, source_time, arrived_at, image = stream.newest_after(last_sequence)
+                if first_processed_arrival is None:
+                    first_processed_arrival = arrived_at
+                last_processed_arrival = arrived_at
                 newest_queue_age_ms.append((time.monotonic() - arrived_at) * 1000.0)
                 last_sequence = sequence
 
@@ -353,6 +358,9 @@ def main() -> int:
             "processed_poses": len(processed_sequences),
             "first_source_sequence": processed_sequences[0],
             "last_source_sequence": processed_sequences[-1],
+            "host_monotonic_stream_started_s": stream.started_at,
+            "first_processed_arrival_monotonic_s": first_processed_arrival,
+            "last_processed_arrival_monotonic_s": last_processed_arrival,
             "source_time_span_s": source_time_span_s,
             "effective_pose_hz_over_source_span": (
                 (len(processed_sequences) - 1) / source_time_span_s
