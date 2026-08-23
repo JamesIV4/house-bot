@@ -3,6 +3,88 @@
 Keep entries concise and evidence based. Link detailed experiment records when
 they exist.
 
+## 2026-08-23 - Motor base rebuilt to front-drive; inputs remapped
+
+### Changed
+
+- Rebuilt the tread base so both motors mount at the front. Previously the left
+  side was driven from the back and the right from the front, making the
+  drivetrain mirror-asymmetric; that asymmetry is the most likely cause of the
+  direction-dependent per-side speed differences fitted on 2026-08-20.
+- The right side gained one extra gear, which reverses its rotation.
+
+### Verified
+
+- Re-tested all four matrix-gated raw actions individually, one action per
+  trial, with the motor service stopped:
+
+  | Raw pins (row/col) | Code label | Physical result |
+  | --- | --- | --- |
+  | BCM5 / BCM4 | `left-forward` | left tread backward |
+  | BCM7 / BCM6 | `left-reverse` | left tread forward |
+  | BCM9 / BCM8 | `right-forward` | right tread forward |
+  | BCM11 / BCM10 | `right-reverse` | right tread backward |
+
+- The map is a clean bijection with no duplicates. The code's `left-*` pins now
+  drive the left tread and `right-*` drive the right tread, so the side swap
+  required before the rebuild is gone. Only the left tread is inverted.
+- Reduced the service flags from `--invert-left --invert-right --swap-sides` to
+  `--invert-left`, redeployed, and confirmed the running unit picked them up.
+- Verified all four semantic motions through `scripts/send_motor_command.py`
+  against the live service: `forward` drove both treads forward, `reverse` both
+  backward, `left` pivoted counterclockwise, and `right` pivoted clockwise.
+  Every run acknowledged 40/40 packets with an acknowledged stop.
+
+### Invalidated
+
+- `config/local/base_calibration*` describes the previous drivetrain. The fitted
+  track width, four direction-specific tread speeds, and footprint must be
+  re-measured before any calibrated motion is trusted.
+- The command-slot duty trim explored on 2026-08-22 (left duty 0.50 for a
+  straight forward run) described the old asymmetric drivetrain and no longer
+  applies.
+
+## 2026-08-21 - Post-rebuild motor mapping re-verified
+
+### Verified
+
+- After the latest rebuild, re-tested each of the four matrix-gated raw
+  actions in isolation, one action per trial: row5/col4, row7/col6, row9/col8,
+  row11/col10. Each was repeated until reproducible (3 consecutive matching
+  trials): row5/col4 drives the right tread backward, row7/col6 the right
+  tread forward, row9/col8 the left tread backward, row11/col10 the left
+  tread forward.
+- Verified all four combined two-tread actions against that per-tread map
+  using `matrix-drive`: `forward` (row5/col4 + row9/col8) moved both treads
+  backward, `reverse` (row7/col6 + row11/col10) moved both treads forward,
+  `left` produced a counterclockwise pivot, and `right` produced a clockwise
+  pivot — all matched prediction with no contradictions.
+- Confirmed end-to-end through the production path: `send_motor_command.py
+  forward` and `reverse` against the running `house-bot-motors.service` both
+  produced the correct physical motion.
+
+### Observed
+
+- The row5/col4 action was not reproducible at first: trial 1 moved both
+  treads backward (consistent with the pre-matrix shared-column artifact
+  described above), trial 2 showed only the left tread backward, before
+  stabilizing to "right tread backward" for three consecutive trials.
+  Recorded as provisionally settled rather than fully explained.
+
+### Changed
+
+- None. The `house-bot-motors.service` flags (`--invert-left --invert-right
+  --swap-sides`), already deployed since the 2026-08-20 rebuild calibration,
+  reproduce exactly the mapping re-verified here. No code, pin-table, or
+  deployment change was required — this rebuild did not change the
+  Pi-GPIO-to-remote wiring, only the chassis/tread assembly.
+
+### Next action
+
+- None outstanding for direction mapping. If the base is rebuilt again,
+  repeat this one-raw-action-at-a-time verification before trusting the
+  deployed service flags.
+
 ## 2026-08-20 - Fractional original-remote control rejected
 
 ### Observed

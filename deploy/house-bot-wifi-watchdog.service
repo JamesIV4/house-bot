@@ -1,0 +1,10 @@
+[Unit]
+Description=House Bot Wi-Fi connectivity repair
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/house-bot-wifi-watchdog
+# Repair steps are slow (rescan, driver reload); do not let them overlap.
+TimeoutStartSec=120

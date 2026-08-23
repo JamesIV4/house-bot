@@ -1,0 +1,11 @@
+[Unit]
+Description=Check House Bot Wi-Fi every two minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=120s
+AccuracySec=10s
+Unit=house-bot-wifi-watchdog.service
+
+[Install]
+WantedBy=timers.target

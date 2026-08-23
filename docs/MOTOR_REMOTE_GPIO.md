@@ -183,3 +183,42 @@ never connect directly to the motor leads.
 The working solution will initially provide direction but not proportional
 speed or wheel odometry. Navigation integration follows after four independent
 drive directions are confirmed.
+
+### Post-rebuild re-verification (2026-08-21)
+
+The row/column pairs above are unchanged, but after the latest chassis
+rebuild the tread each pair drives is no longer what the "Robot action"
+column says: row5/col4 (labeled left-forward here) now drives the right
+tread backward, row7/col6 (left-reverse) drives the right tread forward,
+row9/col8 (right-forward) drives the left tread backward, and row11/col10
+(right-reverse) drives the left tread forward. All four individual actions
+and all four `matrix-drive` combinations were re-tested one action at a time
+and are reproducible; see the 2026-08-21 session log entry for the full
+trial record.
+
+This table is left as-is (not relabeled) because the deployed
+`house-bot-motors.service` already corrects for it: its `--invert-left
+--invert-right --swap-sides` flags, set during the 2026-08-20 rebuild
+calibration, compose to exactly this mapping. That means the rebuild changed
+only the chassis/tread assembly, not the Pi-GPIO-to-remote wiring — the same
+service configuration is still correct. No code or deployment change was
+needed.
+
+### Front-drive rebuild remap (2026-08-23)
+
+The base was rebuilt so both motors mount at the front, and the right side
+gained one extra gear that reverses its rotation. Re-testing each raw pair
+individually gave a clean bijection:
+
+| Scan row | Input column | Code label | Physical result |
+| --- | --- | --- | --- |
+| BCM5, pin 29 | BCM4, pin 7 | `left-forward` | left tread backward |
+| BCM7, pin 26 | BCM6, pin 31 | `left-reverse` | left tread forward |
+| BCM9, pin 21 | BCM8, pin 24 | `right-forward` | right tread forward |
+| BCM11, pin 23 | BCM10, pin 19 | `right-reverse` | right tread backward |
+
+The code's `left-*` pins now drive the left tread and `right-*` drive the right
+tread, so the side swap required by the previous build is gone and only the left
+tread is inverted. The service therefore runs with `--invert-left` alone; all
+four semantic motions were confirmed against the live service. This supersedes
+the 2026-08-21 note above.

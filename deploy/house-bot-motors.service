@@ -5,7 +5,7 @@ After=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/james
-ExecStart=/usr/bin/python3 /home/james/pi_motor_service.py --bind 0.0.0.0 --port 8765 --watchdog 0.35 --invert-left --invert-right --swap-sides
+ExecStart=/usr/bin/python3 /home/james/pi_motor_service.py --bind 0.0.0.0 --port 8765 --watchdog 0.35 --invert-left
 Restart=on-failure
 RestartSec=1
 KillSignal=SIGTERM
