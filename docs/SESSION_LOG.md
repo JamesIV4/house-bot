@@ -35,6 +35,37 @@ they exist.
   backward, `left` pivoted counterclockwise, and `right` pivoted clockwise.
   Every run acknowledged 40/40 packets with an acknowledged stop.
 
+### Recalibrated
+
+- Re-ran the four full-power 3-second trials against the front-drive base and
+  solved with `scripts/calibrate_base.py`; result was `CALIBRATION_QUALITY=PASS`.
+- Forward travelled 0.838 m and reverse 0.737 m, both with **zero heading
+  drift**, against 0.58 m at -17.5 deg and 0.740 m at +5 deg on the previous
+  build. Pivots reached 450 deg (left) and 390 deg (right) in three seconds.
+- Fitted 0.216 m effective track width, tread speeds of 0.245-0.281 m/s, a
+  0.144 m conservative radius, and at most 7.0% coefficient of variation.
+- Geometry re-measured: 6 x 6 in footprint (5 in treads plus a 1 in rear body
+  extension) and the camera 1 in forward of `base_link`, 6 in high, level.
+- The 2026-08-22 command-slot duty trim is retired. It existed only to cancel
+  the old drivetrain asymmetry, which the rebuild eliminated.
+
+### Speed control rejected a second time
+
+- Tested command-slot duty cycling as a *speed* control by applying equal duty
+  to both treads. This is distinct from the GPIO scan-window pulse density that
+  D-020 rejected: every packet remains a full-power binary command and only
+  whole 50 ms slots are dropped.
+- Measured over three seconds: 60/60 slots gave 0.838 m, 30/60 gave 0.610 m,
+  and 10/60 gave 0.292 m. Effective speed is therefore 100%, 73%, and 35% of
+  full against a linear expectation of 100%, 50%, and 17%.
+- The curve is heavily compressed because tread inertia carries the base
+  across short gaps. At 10/60 the 300 ms gaps exceed that coasting window: the
+  base moved in visible stop-start steps and drifted about 15 degrees left as
+  per-side stiction stopped cancelling.
+- Conclusion: duty cycling is not a usable proportional speed control. The base
+  stays binary full-power/stop, and motion is commanded as timed full-power
+  segments using the calibrated speeds above.
+
 ### Invalidated
 
 - `config/local/base_calibration*` describes the previous drivetrain. The fitted
