@@ -2,6 +2,45 @@
 
 **Date:** 2026-08-27
 
+## Current status (2026-08-27, end of session 2)
+
+**Base calibration is complete and passing.** `CALIBRATION_QUALITY=PASS`, written
+to `config/local/base_calibration.yaml` and `.summary.json`.
+
+| | Forward | Reverse |
+| --- | ---: | ---: |
+| left tread | 0.2579 m/s | 0.2375 m/s |
+| right tread | 0.2391 m/s | 0.2436 m/s |
+
+Effective track width 0.2164 m, Nav2 radius 0.1437 m. Coefficient of variation
+2.0% on both left channels, 3.9-4.5% on the right. The track width lands within
+0.2% of the pre-rewire 0.216 m from independent trials.
+
+Going forward the left tread runs 7.9% faster than the right, which is the
+systematic rightward drift; in reverse the two are within 2.6% and the drift
+nearly vanishes. Now measured and compensated rather than unexplained.
+
+**The "will not drive straight" fault did not reproduce.** Twelve trials ran
+clean. What was ruled out first, by measurement: the pin map, the deployed code,
+the calibration script's inputs, the column release timing, and the shared-pin
+pivot -- plus an on-blocks pass where all four single actions, both pairs, and
+the UDP service path were correct with the treads unloaded. See "Session 2: the
+Pi side is not the fault" below.
+
+**Watch the right tread.** It carries roughly double the left's run-to-run
+variation in both directions. Small enough to pass, and the leading suspect if
+straight-line driving degrades again.
+
+**The remote sleeps after 2-5 minutes idle** and its MCU stops scanning
+entirely. A command sent into a slept remote actuates nothing and reads as
+`+0.00 deg`, not as an error -- one calibration trial was lost this way and
+discarded. Unrelated to the retired `drive_primed.py`, which addressed dropped
+short commands on the old wiring.
+
+> Everything below this section is research history, in the order it happened.
+> Several of its conclusions were later disproved; those are marked inline.
+> Trust this section over anything below it.
+
 ## What changed
 
 The GT004 remote's button wires were re-soldered and the Pi header assignment
@@ -75,6 +114,7 @@ Two things now argue against that explanation:
 Flaky connections on the old wiring explain the original symptom better than
 receiver sleep does. Priming is off by default in `turn_by_imu.py` and remains
 only as an explicit `--prime` escape hatch.
+
 
 Closed-loop turning removes the need for it either way: the controller drives
 until the measured angle arrives, so a slow wake costs time rather than
@@ -246,6 +286,12 @@ dominates before sustained speed does.
 This is directionally consistent with the base veering right when both treads
 drive forward, recorded before the IMU existed.
 
+**Session 2: this is now the leading lead, not a curiosity.** Once the Pi side
+was cleared, a weak right drivetrain became the best remaining explanation for
+the whole fault. Note the asymmetry appears with a *single* tread driving, where
+supply sag is mildest, which argues against the motor pack and for the right
+side itself.
+
 The 1.76:1 magnitude does **not** transfer to straight-line driving, though.
 Taken literally it predicts both-treads-forward rotating at about 68 deg/s;
 the measured drift after the wiring fix is 4.4 deg/s. Single-tread trials are
@@ -266,23 +312,22 @@ Both results are discarded rather than recorded:
 Neither is trustworthy after an impact, and gains must not be tuned on them.
 Both need re-running with someone present.
 
-## The duplicate-net wiring fault
+## The duplicate-net wiring discovery
 
-Every measurement above involving more than one simultaneous action is
-invalidated by a fault found late in the session, and the ones taken after the
-fix differ substantially.
+> **Superseded.** This section originally read "the duplicate-net wiring fault"
+> and credited it with causing the drive symptoms below. It does not. The wiring
+> observation is real and the one-pin-per-net map is correct, but it was not the
+> cause — see "Session 2: the Pi side is not the fault" at the end of this
+> document. The text is kept because the reasoning is instructive about how a
+> plausible mechanism got mistaken for a confirmed one.
 
 The harness wires each of the remote's four matrix nets to the Pi **twice**,
 once at each button touching it. `MATRIX_PINS` treated the eight wires as eight
 independent pins, so it drove and released the same net through two different
-pins. Releasing BCM16 does nothing while BCM22 still holds net C low.
+pins. Releasing BCM16 does nothing while BCM22 still holds net C low. That is a
+genuine defect and worth fixing on its own terms.
 
-It hid for so long because **every action is correct in isolation**: a single
-action touches only one pin per net, so all four verified perfectly one at a
-time, and `identify-rows` classified every wire correctly. Only simultaneous
-pairs break.
-
-Symptoms, all from this one cause:
+It was credited with these symptoms:
 
 - `forward` drove one tread and spun the base hard right rather than driving
   straight, intermittently;
@@ -290,6 +335,13 @@ Symptoms, all from this one cause:
 - pivots ran on one tread much of the time. A one-tread pivot still rotates the
   base, so this went unnoticed, surfacing only as unexplained variance in pivot
   rate (84-150 dps) and coast (30.4-37.9 deg).
+
+**None of those attributions hold.** The old and new maps are electrically
+identical for exactly the commands whose behaviour changed, the improvement did
+not persist, and every symptom returned later the same day with the corrected
+map deployed. The reasoning that should have caught this at the time is already
+recorded below under "Unexplained: why the single-tread results changed" — it
+was written, and then not acted on.
 
 Diagnosis was by driving each wire low and reading the others:
 
@@ -305,101 +357,15 @@ Two hypotheses were tested and rejected first, both by measurement:
 - **One side geared backwards.** Rejected: single-tread yaw signs are both
   correct, and `left-forward + right-reverse` spun rather than driving straight,
   which it would not have if a side were inverted.
-- **A release race into the next row's scan window.** Rejected: with two actions
-  active the column is held 160-249 us against a 428 us budget, 0 of 148 presses
-  overrunning.
+- **A release race into the next row's scan window.** Rejected, but on wrong
+  numbers: the "428 us budget" is the row-B-fall to row-D-fall spacing, which
+  includes row B's own ~210 us window, and the hold was measured with mock pins
+  in a tight loop. The real budget from row B's rising edge is 216 us. The
+  conclusion happened to be right — see the direct measurement in session 2 —
+  but it was not established by this.
 
 `identify-rows` now detects shared nets and rewrites its printed `MATRIX_PINS`
 to one pin per net.
-
-## Results after the wiring fix
-
-Pivot coast tightened from a 30.4-37.9 deg spread to 28.1-29.3 deg, and a
-90 deg turn landed at +91.22 deg on the second attempt once the coast was
-re-learned.
-
-Straight-line heading, 2 s runs:
-
-| Direction | Open loop | Closed loop, old gains | Closed loop, tuned |
-| --- | ---: | ---: | ---: |
-| Forward | -8.74 deg | -4.77 deg | **+0.14 deg** |
-| Reverse | -0.56 deg | -1.79 deg | -1.49 deg |
-
-Forward carries a systematic ~4.4 deg/s rightward drift; reverse barely drifts.
-Proportional gain 2.5 settles around 6.6 deg of standing error against that
-drift, which matches the -4.77 deg result. Gain 6.0 with integral 10.0 and a
-0.3 duty floor brought a 2 s forward run to 0.14 deg, 0.97 deg rms. Those are
-now the defaults.
-
-Composed turn-then-drive: the turn landed +89.97 deg (0.03 deg error) and the
-following 2 s drive held the heading to +2.58 deg.
-
-Steering authority is roughly 27 dps at a full one-tread drop, so nulling the
-4.4 dps forward drift needs about a 16% duty reduction. The previous 0.45 duty
-floor left little headroom above that; 0.3 leaves plenty.
-
-## Runs discarded
-
-Three runs hit obstacles and are excluded rather than recorded: an early
-forward heading hold and steering-authority measurement (robot unattended), and
-a later turn-then-drive run. A fourth, a forward run reading -128.49 deg, was
-initially suspected as an electrical fault; the timing measurement ruled that
-out and a repeat on a clear floor gave -8.74 deg, matching the earlier -9.86 deg.
-
-## Rotation quantum, re-measured after the wiring fix
-
-Four trials per cell, all three modes, repeating the earlier sweep:
-
-| Mode | 0.05 s | 0.08 s | 0.12 s | 0.20 s |
-| --- | --- | --- | --- | --- |
-| pivot | 15.7 +/-4.8 | **22.7 +/-0.5** | 28.8 +/-0.7 | 40.7 +/-2.7 |
-| tread-forward | 8.7 +/-4.3 | **11.2 +/-0.9** | 14.4 +/-0.7 | 20.8 +/-1.2 |
-| tread-reverse | **8.3 +/-1.0** | 11.1 +/-1.3 | 13.9 +/-2.0 | 20.6 +/-1.9 |
-
-### Repeat sweep: only 0.08 s and longer reproduce
-
-The tread modes were swept twice, independently, four trials per cell:
-
-| Mode / pulse | Sweep 1 | Sweep 2 |
-| --- | --- | --- |
-| tread-forward 0.05 | 8.7 +/-4.3 | 3.0 +/-2.4 |
-| tread-forward 0.08 | 11.2 +/-0.9 | 12.0 +/-1.0 |
-| tread-forward 0.12 | 14.4 +/-0.7 | 13.9 +/-1.0 |
-| tread-forward 0.20 | 20.8 +/-1.2 | 20.5 +/-2.0 |
-| tread-reverse 0.05 | 8.3 +/-1.0 | 7.8 +/-3.3 |
-| tread-reverse 0.08 | 11.1 +/-1.3 | 11.6 +/-1.4 |
-| tread-reverse 0.12 | 13.9 +/-2.0 | 13.5 +/-2.3 |
-| tread-reverse 0.20 | 20.6 +/-1.9 | 19.9 +/-4.3 |
-
-0.08 s and above reproduce within about a degree. **The 0.05 s cells do not.**
-A single command packet either lands inside a scan window or does not, and both
-modes swing across sweeps.
-
-Sweep 1 alone suggested `tread-reverse` reached 8.3 deg +/-1.0 at 0.05 s and
-was therefore the finest lever, vindicating the bench expectation. The repeat
-does not support that: it was one lucky cluster of four trials. At 0.08 s, the
-shortest reliable length, the two tread modes are equal within noise, and
-`tread-forward` holds a tighter spread at longer pulses.
-
-**The practical floor for a stationary nudge is about 12 deg**, so residuals
-down to roughly 14 deg can be closed standing still. Post-turn residuals of
-1-6 deg remain below that, so `--nudge-pulse` stays 0 and heading is corrected
-while driving.
-
-This is the second time a two-trial or single-sweep result here pointed the
-wrong way. Nothing from one sweep of this measurement should be treated as
-settled.
-
-### Oddity, not being pursued
-
-The single-tread results changed sharply across the wiring fix even though the
-old and new `MATRIX_PINS` are electrically identical for single actions: old
-`right-forward` was (BCM19, BCM16) and new is (BCM19, BCM22), and BCM16 and
-BCM22 are the same net. A later repeat sweep confirms the post-fix numbers are
-stable, so the pre-fix sweep is the anomaly rather than the current one.
-
-Recorded as an oddity and closed. The wiring fault is fixed, forward and
-reverse drive correctly, and the post-fix measurements are the real results.
 
 ## Results after the wiring fix
 
@@ -505,7 +471,11 @@ forward, and see whether it spins again. That has not been done.
 - straight-line distance spread over repeated identical unprimed commands;
 - whether right pivots coast the same as left.
 
-## Handoff: base does not drive straight, calibration blocked
+## Session 1 handoff: base does not drive straight, calibration blocked
+
+> **Partly superseded by session 2**, below. The electrical hypotheses in this
+> section were all tested and none survived. The observations and the discarded
+> runs stand; the diagnosis does not.
 
 **Status at handoff.** Base calibration is blocked at forward trial 1. The base
 will not drive straight: a 3 s `forward` command spun roughly two-thirds of a
@@ -568,21 +538,30 @@ repeatedly, and today showed that single measurements here can mislead.
 
 ### Open hypotheses, untested
 
+Session 2 resolved three of these four. Verdicts added inline; the reasoning is
+in "Session 2: the Pi side is not the fault" at the end of this document.
+
 - **Motor battery low.** The pack had been driving all day. A weak pack would let
   either motor run alone while sagging under two, stalling the weaker one. This
   would account for both the 2:1 imbalance and the paired-command dropout with one
   cause, which is why it is listed first -- not because it has any evidence over
-  the others.
+  the others. **Demoted:** the 2:1 imbalance appears with a single tread running,
+  where sag is mildest, so the pack does not explain it. Still worth eliminating
+  with fresh cells.
 - **Right tread mechanically impaired.** The base struck obstacles at least twice
   during the session. The 56-93 dps fluctuation within a single run is at least as
-  consistent with slipping as with a clean motor.
+  consistent with slipping as with a clean motor. **Now the leading candidate**,
+  by elimination of everything upstream and by the single-tread asymmetry.
 - **Remote transmits only one key at a time.** Would explain the paired dropout
   but not the single-tread imbalance, and paired commands demonstrably worked
-  earlier both today and before the rewire.
+  earlier both today and before the rewire. **Rejected:** on blocks, `FORWARD`
+  and `PIVOT LEFT` both drive two treads correctly.
 - **The duplicate-net change was not the real fix.** Forward driving went from
   reliably spinning to six consecutive clean runs immediately after that deploy,
   yet old and new `MATRIX_PINS` are electrically identical for exactly the
-  commands that changed behaviour. Never settled; see the oddity note above.
+  commands that changed behaviour. **Confirmed:** it was not the fix. The six
+  clean runs were a coincidence. One pin per net is still correct, for its own
+  reasons.
 
 ### How to re-test
 
@@ -593,6 +572,10 @@ python3 scripts/probe_matrix.py \
 
 Healthy looks like the two single treads roughly equal and opposite, and
 `FORWARD` near zero. At handoff it reads -154 / +73 / -138.
+
+Run this on the floor only. On blocks it measures nothing, because the base
+cannot rotate — and on blocks every one of these commands is already known to be
+correct.
 
 Then resume calibration from `docs/BASE_CALIBRATION.md` step 3.
 
@@ -617,3 +600,130 @@ so `drive_distance.py`, `drive_straight_compensated.py` and the scale route fail
 loudly rather than fitting against pre-rewire numbers.
 
 149 tests pass; 7 need numpy and run under `envs/dpvo/bin/python`.
+
+
+## Session 2: the Pi side is not the fault
+
+Everything between the calibration script and the remote's matrix was tested and
+cleared. The fault is downstream of all of it, and needs load to appear.
+
+### What was checked, and how
+
+| Suspect | Verdict | Evidence |
+| --- | --- | --- |
+| Calibration script drives with stale pins | **Clear** | `calibrate_base_trials.py` holds no pin knowledge: `MOTIONS` -> wheel floats -> UDP -> `actions_for_wheels` -> `MATRIX_PINS` |
+| Deployed Pi code drifted from the repo | **Clear** | `remote_gpio_controller.py` and `pi_motor_service.py` on the Pi are md5-identical to the repo; unit file has no invert flags; service active |
+| Pin map wrong after the rewire | **Clear** | `MATRIX_PINS` matches the harness net-for-net against the wire colours |
+| Column release races the next row | **Clear** | measured directly; see below |
+| Shared-pin pivot has a software bug | **Clear** | `PIVOT LEFT` drives both actions through BCM22 and behaves correctly |
+
+### The timing theory, raised and killed
+
+Every column pin is shared by one left action and one right action (BCM17 is
+`left-forward` + `right-reverse`; BCM22 is `left-reverse` + `right-forward`), and
+the scan is sharply asymmetric:
+
+| Interval | Median |
+| --- | ---: |
+| row B rises -> row D falls (a left action's budget) | 216 us |
+| row D rises -> row B falls (a right action's budget) | 39 524 us |
+
+Two runs 45 minutes apart agree to within 0.2 us. Row B is scanned immediately
+before row D, so a slow left-side release would ghost the right-side button on
+the same column while a right-side release never could. That predicts exactly the
+reported symptom — left controls moving both treads, right controls clean — and
+it is wrong.
+
+Measured with the duplicate harness wires used as probes, which is what they are
+good for: drive net A through BCM17 gated on row B, and read BCM26 (same net) and
+BCM20 (row D) at the same time.
+
+| Gated action | Net recovery after row rise | Ghost presses |
+| --- | ---: | ---: |
+| `left-forward` (18 -> 17) | 20.7 us median, 49.3 us max | 0 of 49 windows |
+| `right-forward` (19 -> 22) | 19.3 us median, 23.9 us max | 0 of 50 windows |
+
+The column is back up about 20 us after the row rises, against 216 us of budget,
+with a 4x margin at the worst sample and not one ghost. An isolated
+`gpio.setup()` benchmark reads 51 us median and 163 us max, which would have been
+marginal, but that overstates the cost inside the settled gating loop.
+
+### On blocks: the symptom does not reproduce unloaded
+
+The confound that made every floor test ambiguous: when one tread drives and the
+base pivots, the *undriven* tread is dragged backwards across the floor. From
+outside that is indistinguishable from both treads being driven in opposite
+directions. Putting the base on blocks removes it entirely.
+
+0.4 s bursts, one at a time, physical result reported before the next was sent:
+
+| Gated | Windows | Observed |
+| --- | ---: | --- |
+| `18:17` left-forward | 10 of ~9 | left tread forward |
+| `18:22` left-reverse | 10 | left tread backward |
+| `19:22` right-forward | 10 | right tread forward |
+| `19:17` right-reverse | 10 | right tread backward |
+| `18:17` + `19:22` FORWARD | 10 / 10 | both treads forward |
+| `18:22` + `19:22` PIVOT LEFT | 10 / 10 | counterclockwise |
+| `forward` via the UDP service | 8/8 acked | both treads forward |
+
+All seven correct, including both pairs and the production service path.
+`FORWARD` — the command that spun two-thirds of a turn on the floor and blocked
+calibration — is correct off the ground.
+
+### Where the fault is
+
+Load-dependent and left-dominant. The right drivetrain is ahead of the battery
+pack as the leading candidate, because the asymmetry shows up with a **single**
+tread running (left alone rotated the base 154 deg, right alone 72.5 deg), where
+supply sag is mildest. A pack that cannot feed two motors does not explain a 2:1
+split with one motor drawing. A right side that spins freely unloaded but cannot
+hold torque under load does, and it also fits the 56-93 dps fluctuation within a
+single run, which reads as slipping rather than as a clean motor. The base struck
+obstacles at least twice during session 1.
+
+### The remote sleeps
+
+It stopped scanning entirely mid-session — both rows flat, having been clean 45
+minutes earlier — and returned once its power was checked. Idle timeout is
+roughly 2-5 minutes. This is the remote, not the receiver, and it is a different
+component from the one the priming investigation cleared. See "Priming retired"
+above, now reopened.
+
+Any gating script should refuse to drive until both rows show a low window,
+rather than reporting a sleeping remote as a dead tread.
+
+### lgpio notes for this Pi
+
+`RPi.GPIO` here is the lgpio shim, so `setup()` is a kernel line release and
+reclaim rather than a register write, and lines are claimed exclusively — the
+motor service must be stopped before any manual GPIO work.
+
+- direct `lgpio.gpio_claim_input` fails on every harness pin with every flag
+  tried; use `RPi.GPIO` for inputs;
+- `lgpio.gpio_claim_output(h, lgpio.SET_OPEN_DRAIN, pin, 0)` works and
+  `gpio_write` toggles in 6.5 us without reclaiming the line, never driving the
+  pin high. Kept on file as an available optimisation, not as a fix — release
+  speed turned out not to be the problem.
+
+### Next
+
+1. With the base on blocks, load each tread by hand (a folded cloth against the
+   tread, not fingers) and compare the force needed to stall each side at the
+   same battery state. Check the right tread's tension, sprocket engagement, free
+   play, and drag with the power off.
+2. If both load up equally, fresh cells in the motor pack, then a floor re-run of
+   `probe_matrix.py "left fwd=18:17" "right fwd=19:22" "FORWARD=18:17,19:22"`.
+   Healthy is the two singles roughly equal and opposite with `FORWARD` near
+   zero; the baseline to beat is -154 / +73 / -138.
+3. Base calibration stays blocked until `FORWARD` drives straight on the floor.
+   The worksheet is still empty, so nothing corrupt is recorded.
+
+### Method note
+
+Three separate mechanisms in this document were argued convincingly and then
+failed on measurement: the duplicate-net fault, the release race, and a tread
+asymmetry that was recorded, retracted, and observed again. In each case the
+argument was sound and the mechanism was real; what was missing was a
+measurement that could have said no. The on-blocks test cost about ten minutes
+and settled what a day of reasoning could not.

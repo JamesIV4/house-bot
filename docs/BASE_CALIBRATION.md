@@ -99,7 +99,12 @@ belongs on the scale route, not here.
 If three seconds would leave the clear test area, use a shorter `--duration`;
 it is recorded with each trial.
 
-### Previous calibration quarantined
+### Recalibrated 2026-08-27
+
+Redone after the rewire; `CALIBRATION_QUALITY=PASS`. See the current-status
+section of `docs/experiments/2026-08-27-remote-remap-and-imu.md`.
+
+### Previous calibration quarantined (historical)
 
 The 2026-08-23 calibration was fitted before the remote rewire, before
 `--invert-left` was removed, and before the duplicate-net wiring fault was

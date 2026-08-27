@@ -60,30 +60,32 @@ Row and column do **not** follow odd/even pin position. Role is an electrical
 property of the pad a wire landed on and is measured, never inferred from
 geometry.
 
-## The duplicate-net fault
+## Use one pin per net
 
-Treating the eight wires as eight independent pins is subtly wrong and cost a
-long debugging session, because **every action works correctly in isolation**.
-A single action only ever touches one pin per net, so all four verified
-perfectly one at a time. Only commands that press two buttons at once break:
-driving net C low through BCM22 while releasing it through BCM16 does not
-release the net, so an intended pair actuates a third button.
+Treating the eight wires as eight independent pins is wrong on its face: driving
+net C low through BCM22 while releasing it through BCM16 does not release the
+net. `MATRIX_PINS` therefore names one pin per net, and `identify-rows` detects
+duplicates automatically — after resolving rows and columns it drives each wire
+low, groups the wires into nets, and rewrites the printed map accordingly.
 
-Symptoms seen, all from this one cause:
+**This was not, however, the cause of the drive faults it was credited with.**
+On 2026-08-27 the eight-pin map was blamed for `forward` spinning the base, for
+a single left-side press appearing to move both treads, and for variance in
+pivot rate and coast. That attribution does not survive scrutiny:
 
-- `forward` drove one tread and spun the base hard right instead of driving
-  straight, intermittently;
-- a single left-side press moved *both* treads on a tank-style base;
-- pivots ran on one tread much of the time, which still rotates the base and so
-  went unnoticed, showing up only as unexplained variance in pivot rate
-  (84-150 dps) and coast (30.4-37.9 deg).
+- the old and new maps are *electrically identical* for exactly the commands
+  whose behaviour changed — old `right-forward` was (BCM19, BCM16), new is
+  (BCM19, BCM22), and BCM16 and BCM22 are the same net. So is `forward`, which
+  is (net B, net A) + (net D, net C) under both maps;
+- the six clean forward runs immediately after that deploy were therefore a
+  coincidence, and the improvement did not hold;
+- the symptoms all returned later the same day with the one-pin-per-net map
+  deployed.
 
-After the fix, forward drives straight, and pivot coast tightened to 28.1-29.3
-deg.
-
-`identify-rows` now detects this: after resolving rows and columns it drives
-each wire low, groups the wires into nets, and rewrites the printed
-`MATRIX_PINS` to one pin per net.
+Keep one pin per net because it is correct, not because it fixes a drive fault.
+See the "Measured gating performance" section below for what the Pi side
+actually does, and `docs/experiments/2026-08-27-remote-remap-and-imu.md` for
+where the fault was eventually traced to.
 
 ## Action-oriented mapping
 
@@ -91,12 +93,45 @@ each wire low, groups the wires into nets, and rewrites the printed
 | --- | --- | --- | --- | --- |
 | Left forward | BCM18 (net B) | BCM17 (net A) | 218.5 us every 40.16 ms | left tread forward |
 | Left reverse | BCM18 (net B) | BCM22 (net C) | shared row with left-forward | left tread backward |
-| Right forward | BCM19 (net D) | BCM22 (net C) | 428 us after net B | right tread forward |
+| Right forward | BCM19 (net D) | BCM22 (net C) | scanned just after net B | right tread forward |
 | Right reverse | BCM19 (net D) | BCM17 (net A) | shared row with right-forward | right tread backward |
 
-Rows B and D scan 428 us apart. The column is held low for 160-249 us with two
-actions active, so a press never reaches the next row's window; that was
-measured directly and ruled out as a fault mode.
+## Measured gating performance
+
+**Every column pin is shared by one left action and one right action.** BCM17 is
+both `left-forward` and `right-reverse`; BCM22 is both `left-reverse` and
+`right-forward`. Nothing but release timing separates them, and the timing is
+sharply asymmetric. Measured passively on the Pi, 2026-08-27, two runs 45 min
+apart agreeing to within 0.2 us:
+
+| Interval | Median |
+| --- | ---: |
+| row B rises -> row D falls (a left action's budget) | 216 us |
+| row D rises -> row B falls (a right action's budget) | 39 524 us |
+
+Row B is scanned immediately before row D, so a left-side action that released
+its column late would actuate the right-side button sharing that column, while a
+right-side action has 39 ms of slack and cannot. That asymmetry matches the
+shape of the observed faults exactly, which makes it a tempting explanation.
+
+**It is not the explanation.** Measured with the duplicate harness wires used as
+probes — driving net A through BCM17 gated on row B while reading BCM26 (same
+net) and BCM20 (row D):
+
+| Gated action | Net recovery after row rise | Ghost presses |
+| --- | ---: | ---: |
+| `left-forward` (18 -> 17) | 20.7 us median, 49.3 us max | 0 of 49 windows |
+| `right-forward` (19 -> 22) | 19.3 us median, 23.9 us max | 0 of 50 windows |
+
+The column is back up ~20 us after the row rises, against a 216 us budget. An
+isolated `gpio.setup()` benchmark suggests 51 us median and 163 us max, which
+would be marginal, but that overstates the cost inside the settled gating loop.
+
+An earlier note claimed a "428 us budget" with the column held 160-249 us. The
+428 us was the row-B-fall to row-D-fall spacing, which includes row B's own
+~210 us window; the real budget from row B's *rising* edge is 216 us. That
+measurement also used mock pins in a tight loop rather than real GPIO calls.
+Both figures are superseded by the table above.
 
 ## Header-only quick reference
 
@@ -138,6 +173,10 @@ orientation. The table records the electrically verified role of each Pi wire.
 ## Power rules
 
 - Keep the remote's two AAA batteries installed.
+- **The remote sleeps after roughly 2-5 minutes idle.** Its MCU stops scanning
+  entirely and both rows go flat, so gating actuates nothing until it wakes.
+  Confirm the rows are alive before trusting any command, and treat a first
+  command after a pause as possibly lost. This is the remote, not the receiver.
 - Do **not** connect Pi pin 1, Pi 3.3 V, or Pi 5 V to the remote.
 - Connect only Pi ground to remote `V-`.
 - Do not connect any Pi GPIO directly to a motor lead.
@@ -145,8 +184,9 @@ orientation. The table records the electrically verified role of each Pi wire.
 
 ## Electrical behavior
 
-The remote uses a scanned button matrix. Holding a shared column continuously
-low moved both motors, so the software instead:
+The remote uses a scanned button matrix. Each column is shared by two buttons in
+different rows, so holding one continuously low actuates both; the software
+instead:
 
 1. observes the selected row as a high-impedance input;
 2. waits for that row's roughly 205-233 us low scan window;
@@ -191,3 +231,29 @@ The motor service therefore runs with **no inversion flags**. The
 `--invert-left` it carried until 2026-08-27 was calibrated against the
 pre-rebuild drivetrain and is now wrong; it was removed from
 `deploy/house-bot-motors.service` when these results were recorded.
+
+### Re-verified unloaded, 2026-08-27
+
+Repeated with the base **on blocks**, treads off the ground, 0.4 s bursts, one
+at a time with the physical result reported before the next. Unloaded removes
+the confound that makes a floor test ambiguous: a pivoting base drags its
+undriven tread backwards across the floor, which looks exactly like both treads
+being driven in opposite directions.
+
+| Gated | Windows | Observed |
+| --- | ---: | --- |
+| `18:17` left-forward | 10 of ~9 | left tread forward |
+| `18:22` left-reverse | 10 | left tread backward |
+| `19:22` right-forward | 10 | right tread forward |
+| `19:17` right-reverse | 10 | right tread backward |
+| `18:17` + `19:22` FORWARD | 10 / 10 | both treads forward |
+| `18:22` + `19:22` PIVOT LEFT | 10 / 10 | counterclockwise |
+| `forward` via the UDP service | 8/8 acked | both treads forward |
+
+All correct, including the two pairs and the full service path. `PIVOT LEFT` is
+the case worth keeping: both its actions drive the **same physical pin** (BCM22)
+with independent `sink` state, so it is the only combination with a plausible
+software failure mode. It passed.
+
+The reported fault does not reproduce with the treads unloaded, which puts it
+downstream of everything documented in this file.

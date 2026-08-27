@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(timeout 60 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'python3 -')",
+      "Bash(timeout 90 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'systemctl --user stop house-bot-motors.service; sleep 0.5; python3 - ; status=$?; systemctl --user start house-bot-motors.service; exit $status')",
+      "Bash(timeout 90 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'python3 -')",
+      "Bash(timeout 120 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'systemctl --user stop house-bot-motors.service; sleep 0.5; python3 -; status=$?; systemctl --user start house-bot-motors.service; exit $status')",
+      "Bash(timeout 60 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'systemctl --user stop house-bot-motors.service; sleep 0.5; python3 -; systemctl --user start house-bot-motors.service')",
+      "Bash(timeout 90 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'systemctl --user stop house-bot-motors.service; sleep 0.5; python3 -; status=$?; systemctl --user start house-bot-motors.service; exit $status')",
+      "Bash(timeout 90 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'systemctl --user stop house-bot-motors.service; sleep 0.5; python3 - 18 17 0.4 \"left-forward alone\"; status=$?; systemctl --user start house-bot-motors.service; exit $status')",
+      "Bash(timeout 90 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'systemctl --user stop house-bot-motors.service; sleep 0.5; python3 - 18 22 0.4 \"left-reverse alone\"; status=$?; systemctl --user start house-bot-motors.service; exit $status')",
+      "Bash(timeout 90 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'systemctl --user stop house-bot-motors.service; sleep 0.5; python3 - 19 22 0.4 \"right-forward alone\"; status=$?; systemctl --user start house-bot-motors.service; exit $status')",
+      "Bash(timeout 90 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'systemctl --user stop house-bot-motors.service; sleep 0.5; python3 - 19 17 0.4 \"right-reverse alone\"; status=$?; systemctl --user start house-bot-motors.service; exit $status')",
+      "Bash(timeout 90 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'systemctl --user stop house-bot-motors.service; sleep 0.5; python3 - \"18:17,19:22\" 0.4 \"FORWARD both treads\"; status=$?; systemctl --user start house-bot-motors.service; exit $status')",
+      "Bash(timeout 90 ssh -i ~/.ssh/housebot_ed25519 -o BatchMode=yes -o ConnectTimeout=8 james@192.168.0.241 'systemctl --user stop house-bot-motors.service; sleep 0.5; python3 - \"18:22,19:22\" 0.4 \"PIVOT LEFT \\(shared pin BCM22\\)\"; status=$?; systemctl --user start house-bot-motors.service; exit $status')",
+      "Bash(timeout 60 python3 scripts/send_motor_command.py forward --duration 0.4)"
+    ]
+  }
+}
