@@ -93,20 +93,47 @@ class SteeringController:
     1.0 when on course; correcting drops slots on the tread that is ahead. The
     gain is deliberately soft because the duty/speed curve is compressed by
     tread inertia: half duty yields roughly three quarters speed.
+
+    `integral_gain` is off by default, which leaves the proportional-only
+    behaviour this class originally had. Turning it on matters against a
+    *systematic* drift: proportional control alone settles wherever its output
+    happens to balance the drift, leaving a standing heading error rather than
+    removing it. The integral term keeps growing until the error is actually
+    nulled. It is clamped so its contribution can never exceed full authority,
+    which is what stops it winding up while the base is stalled or held.
     """
 
     gain: float = 1.2
     min_duty: float = 0.45
     deadband_rad: float = math.radians(2.0)
+    integral_gain: float = 0.0
+    integral: float = 0.0
 
-    def duties(self, heading_error: float) -> tuple[float, float]:
-        if abs(heading_error) <= self.deadband_rad:
+    def reset(self) -> None:
+        self.integral = 0.0
+
+    def integral_limit(self) -> float:
+        if self.integral_gain <= 0.0:
+            return 0.0
+        return 1.0 / self.integral_gain
+
+    def command(self, heading_error: float, dt: float = 0.0) -> float:
+        """Signed steering demand: positive slows the left tread."""
+        if dt > 0.0 and self.integral_gain > 0.0:
+            limit = self.integral_limit()
+            self.integral = max(-limit, min(limit, self.integral + heading_error * dt))
+        return self.gain * heading_error + self.integral_gain * self.integral
+
+    def duties(self, heading_error: float, dt: float = 0.0) -> tuple[float, float]:
+        demand = self.command(heading_error, dt)
+        # With integral_gain at 0 this is exactly `|heading_error| <= deadband`.
+        if abs(demand) <= self.deadband_rad * self.gain:
             return 1.0, 1.0
         # error = target - yaw. A positive error means yaw must increase, i.e.
         # turn left, which needs omega = (v_r - v_l)/W > 0: slow the LEFT tread.
-        magnitude = min(1.0, abs(heading_error) * self.gain)
+        magnitude = min(1.0, abs(demand))
         reduced = 1.0 - magnitude * (1.0 - self.min_duty)
-        return (reduced, 1.0) if heading_error > 0 else (1.0, reduced)
+        return (reduced, 1.0) if demand > 0 else (1.0, reduced)
 
 
 @dataclass

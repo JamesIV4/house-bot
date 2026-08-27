@@ -134,11 +134,84 @@ not proportional to command duration on this base, so a stopwatch cannot be
 made accurate; yaw feedback removes the need for the table entirely.
 
 The base has no proportional speed (D-020), so the controller is bang-bang:
-full power until the projected stop point, then release. Because the base
-coasts, the stop is issued early by `lead_seconds` worth of the current yaw
-rate. Each turn measures its own coast and blends it back into
-`config/local/imu_turn_calibration.json`, so the lead converges without a
-separate calibration route.
+full power until the stop point, then release. Because the base coasts, the
+release comes a whole coast angle short of the target. Each turn measures its
+own coast and blends it back into `config/local/imu_turn_calibration.json`, so
+it converges without a separate calibration route.
+
+Coast is modelled as a constant **angle**, not a constant time. Measured
+2026-08-27: a stop at 150.4 dps coasted 33.76 deg and a stop at 124.8 dps
+coasted 33.27 deg, so a 20% change in rate moved the coast by 1.5%. Scaling a
+time-based lead by the yaw rate mispredicts as the rate varies.
+
+That coast is also the floor on correction size. The base cannot rotate less
+than it coasts at full power, so a residual smaller than roughly 33 deg is
+reported and accepted rather than chased with a nudge that would overshoot
+further than the error itself.
+
+## Correcting a residual heading
+
+Two mechanisms, and on this base the second is the one that matters.
+
+**Standing still**, a short pulse rotates less than a full-power turn. Two
+levers stack: a pulse short enough that the base never reaches full speed, and
+driving one tread instead of two. Measured smallest repeatable quantum per mode
+(2026-08-27, four trials per cell):
+
+| Mode | Pulse | Rotation | Reproduced |
+| --- | --- | --- | --- |
+| `tread-forward` | 0.08 s | **11.2 / 12.0 deg** | yes, two sweeps |
+| `tread-reverse` | 0.08 s | 11.1 / 11.6 deg | yes, two sweeps |
+| `pivot` | 0.08 s | 22.7 deg | yes |
+| either tread mode | 0.05 s | 3-9 deg | **no** |
+
+0.05 s is a single command packet, so whether it lands inside a scan window is
+chance and it does not reproduce between sweeps. Select with
+`turn_by_imu.py --nudge-mode --nudge-pulse`, and re-measure with
+`pulse_response.py`, which gates its recommendation on repeatability rather
+than mean size -- a pulse averaging 20 deg but ranging 13-27 cannot close a
+20 deg error.
+
+The floor is therefore about 12 deg. A typical post-turn residual is 1-6 deg,
+below that, so `--nudge-pulse` stays 0 by default and heading is corrected
+while driving.
+
+**While driving**, heading is steered by dropping whole command slots on the
+tread that is ahead, which is far finer than any pulse:
+
+```bash
+python3 scripts/drive_heading.py forward --seconds 3
+python3 scripts/drive_heading.py reverse --seconds 3
+python3 scripts/drive_heading.py forward --seconds 3 --turn 90
+```
+
+The third form pivots first and then holds the heading the turn was *aiming*
+for rather than the one it reached, so a turn that lands a few degrees short is
+corrected over the first part of the drive at no cost.
+
+Driving backward reverses both tread velocities, so `omega = (v_r - v_l)/W`
+changes sign and the correction must be applied to the other tread. The duties
+are swapped for reverse; without that, a reverse run diverges instead of
+correcting.
+
+The steering law adds integral action to the proportional law the SLAM path
+uses. Against a *systematic* drift, proportional control alone settles wherever
+its output happens to balance the drift, leaving a standing error rather than
+removing it. The integral is clamped so its contribution can never exceed full
+authority, which stops it winding up while the base is stalled or held.
+
+Measured on the base over 2 s runs, 2026-08-27:
+
+| Direction | Open loop | Closed loop |
+| --- | ---: | ---: |
+| Forward | -8.74 deg | **+0.14 deg**, 0.97 deg rms |
+| Reverse | -0.56 deg | -1.49 deg, 0.53 deg rms |
+
+Forward carries a systematic ~4.4 deg/s rightward drift; reverse barely drifts.
+Defaults are gain 6.0, integral 10.0, 1.0 deg deadband, 0.3 duty floor. Gain
+2.5 settles around 6.6 deg of standing error against this drift, and a 0.45
+duty floor leaves too little headroom over the ~16% duty reduction needed to
+null it.
 
 Order of operations per turn:
 

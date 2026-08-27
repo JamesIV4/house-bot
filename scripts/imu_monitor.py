@@ -15,7 +15,59 @@ from __future__ import annotations
 import argparse
 import time
 
+import json
+from pathlib import Path
+
+from mpu6050 import base_attitude, mounting_offset
 from turn_by_imu import DEFAULT_IMU_PORT, ImuClient, ImuError
+
+
+MOUNT_PATH = Path(__file__).resolve().parent.parent / "config" / "local" / "imu_mount.json"
+
+
+def record_level(client: ImuClient, seconds: float, path: Path) -> int:
+    """Capture gravity with the base on a known-level surface.
+
+    Without this the board's own mounting angle is indistinguishable from the
+    base being on a slope, so the IMU cannot report base pitch or roll at all.
+    Yaw is unaffected either way.
+    """
+    print("The base must be on a surface you have confirmed level, and still.")
+    reply = client.calibrate(seconds)
+    accel = reply.get("level_accel")
+    if not accel:
+        raise ImuError("calibration returned no accelerometer reference")
+    pitch, roll = mounting_offset(accel)
+    document = {
+        "level_accel": accel,
+        "board_pitch_deg": round(pitch, 3),
+        "board_roll_deg": round(roll, 3),
+        "tilt_deg": reply.get("tilt"),
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+    print(f"  gravity reference: {[round(a, 4) for a in accel]}")
+    print(f"  board mounting offset: pitch {pitch:+.2f} deg, roll {roll:+.2f} deg")
+    print(f"  total tilt from vertical: {reply.get('tilt')} deg")
+    print(f"  saved -> {path}")
+    print("\nBase pitch and roll are now measurable; yaw was never affected by this.")
+    return 0
+
+
+def show_attitude(client: ImuClient, path: Path) -> int:
+    try:
+        reference = json.loads(path.read_text())["level_accel"]
+    except (OSError, json.JSONDecodeError, KeyError):
+        print(f"No mounting reference at {path}; run --record-level first.")
+        return 2
+    reply = client.request({"cmd": "state"})
+    accel = reply.get("accel")
+    if not accel:
+        print("service did not report an accelerometer vector")
+        return 2
+    pitch, roll = base_attitude(accel, reference)
+    print(f"base pitch {pitch:+.2f} deg, roll {roll:+.2f} deg (mounting offset removed)")
+    return 0
 
 
 def live(client: ImuClient, seconds: float, interval: float) -> int:
@@ -103,6 +155,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--calibrate-seconds", type=float, default=2.0)
     parser.add_argument("--zero", action="store_true", help="zero yaw before the live display")
+    parser.add_argument(
+        "--record-level",
+        action="store_true",
+        help="capture the board-to-base mounting offset with the base on a "
+             "known-level surface, so base pitch and roll become measurable",
+    )
+    parser.add_argument(
+        "--attitude",
+        action="store_true",
+        help="report base pitch and roll using the recorded mounting offset",
+    )
+    parser.add_argument("--mount-file", type=Path, default=MOUNT_PATH)
     return parser
 
 
@@ -111,6 +175,10 @@ def main() -> int:
     client = ImuClient(args.host, args.port)
     try:
         client.wait_for_stream()
+        if args.record_level:
+            return record_level(client, max(args.calibrate_seconds, 2.0), args.mount_file)
+        if args.attitude:
+            return show_attitude(client, args.mount_file)
         if args.drift is not None:
             if not 5.0 <= args.drift <= 3600.0:
                 raise SystemExit("--drift must be between 5 and 3600 seconds")

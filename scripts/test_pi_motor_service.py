@@ -101,6 +101,99 @@ class PiMotorServiceTests(unittest.TestCase):
             service.WheelCommand("session-a", 12, -1.0, 1.0),
         )
 
+    def make_gpio(self):
+        class FakeGpio:
+            BCM = "BCM"
+            IN = "IN"
+            OUT = "OUT"
+            PUD_OFF = "PUD_OFF"
+            LOW = 0
+
+            def __init__(self) -> None:
+                self.levels = {pin: 1 for pair in service.MATRIX_PINS.values() for pin in pair}
+                self.setup_calls = []
+
+            def setwarnings(self, _enabled):
+                pass
+
+            def setmode(self, _mode):
+                pass
+
+            def setup(self, pin, mode, **kwargs):
+                self.setup_calls.append((pin, mode, kwargs))
+
+            def input(self, pin):
+                return self.levels[pin]
+
+            def cleanup(self, _pins):
+                pass
+
+        return FakeGpio()
+
+    def test_dropping_one_tread_leaves_the_other_treads_column_alone(self) -> None:
+        """Regression: heading control drops slots on one tread at 20 Hz.
+
+        Releasing every column on any action change tore down the tread that
+        was meant to keep running, every 50 ms against a 40 ms scan period. The
+        base then veered harder the more the controller corrected.
+        """
+        gpio = self.make_gpio()
+        runtime = service.MatrixMotorRuntime(gpio)
+        _right_row, right_column = service.MATRIX_PINS["right-forward"]
+
+        runtime.set_wheels(1.0, 1.0)
+        del gpio.setup_calls[:]
+        # One dropped left slot, then back on, as the steering loop does.
+        runtime.set_wheels(0.0, 1.0)
+        runtime.set_wheels(1.0, 1.0)
+
+        touched = [call for call in gpio.setup_calls if call[0] == right_column]
+        self.assertEqual(
+            touched,
+            [],
+            "the right tread's column was reconfigured while only the left tread changed",
+        )
+
+    def test_dropping_one_tread_preserves_the_other_treads_scan_state(self) -> None:
+        gpio = self.make_gpio()
+        runtime = service.MatrixMotorRuntime(gpio)
+        runtime.set_wheels(1.0, 1.0)
+        runtime.duty_accumulator["right-forward"] = 0.4
+        runtime.row_was_low["right-forward"] = True
+
+        runtime.set_wheels(0.0, 1.0)
+
+        self.assertAlmostEqual(runtime.duty_accumulator["right-forward"], 0.4)
+        self.assertTrue(runtime.row_was_low["right-forward"])
+
+    def test_a_tread_that_stops_is_still_released_and_reset(self) -> None:
+        gpio = self.make_gpio()
+        runtime = service.MatrixMotorRuntime(gpio)
+        runtime.set_wheels(1.0, 1.0)
+        runtime.duty_accumulator["left-forward"] = 0.7
+        _left_row, left_column = service.MATRIX_PINS["left-forward"]
+        del gpio.setup_calls[:]
+
+        runtime.set_wheels(0.0, 1.0)
+
+        self.assertIn(
+            (left_column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
+            gpio.setup_calls,
+        )
+        self.assertEqual(runtime.duty_accumulator["left-forward"], 0.0)
+        self.assertFalse(runtime.sink_active["left-forward"])
+
+    def test_stopping_releases_every_column(self) -> None:
+        gpio = self.make_gpio()
+        runtime = service.MatrixMotorRuntime(gpio)
+        runtime.set_wheels(1.0, 1.0)
+        del gpio.setup_calls[:]
+        runtime.set_wheels(0.0, 0.0)
+        released = {call[0] for call in gpio.setup_calls if call[1] == gpio.IN}
+        for name in ("left-forward", "right-forward"):
+            self.assertIn(service.MATRIX_PINS[name][1], released)
+        self.assertEqual(runtime.actions, ())
+
     def test_scan_window_duty_cycle_preserves_magnitude(self) -> None:
         class FakeGpio:
             BCM = "BCM"

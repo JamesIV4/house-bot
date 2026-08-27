@@ -209,5 +209,50 @@ class OrientationTests(unittest.TestCase):
         self.assertIn("expected about 1.000 g", message)
 
 
+class MountingOffsetTests(unittest.TestCase):
+    """The board sits 8-10 deg off vertical on this base.
+
+    Yaw is projected onto measured gravity so it does not care, but base pitch
+    and roll are indistinguishable from the mounting angle until a reference is
+    captured on level ground.
+    """
+
+    def test_a_level_board_has_no_offset(self) -> None:
+        pitch, roll = mpu.mounting_offset((0.0, 0.0, 1.0))
+        self.assertAlmostEqual(pitch, 0.0, places=6)
+        self.assertAlmostEqual(roll, 0.0, places=6)
+
+    def test_pitch_is_rotation_about_x_and_roll_about_y(self) -> None:
+        tilt = math.radians(9.0)
+        pitch, roll = mpu.mounting_offset((0.0, math.sin(tilt), math.cos(tilt)))
+        self.assertAlmostEqual(pitch, 9.0, places=3)
+        self.assertAlmostEqual(roll, 0.0, places=6)
+        pitch, roll = mpu.mounting_offset((-math.sin(tilt), 0.0, math.cos(tilt)))
+        self.assertAlmostEqual(pitch, 0.0, places=6)
+        self.assertAlmostEqual(roll, 9.0, places=3)
+
+    def test_the_reference_orientation_reads_as_flat(self) -> None:
+        tilted = (0.05, 0.16, 0.985)
+        pitch, roll = mpu.base_attitude(tilted, tilted)
+        self.assertAlmostEqual(pitch, 0.0, places=6)
+        self.assertAlmostEqual(roll, 0.0, places=6)
+
+    def test_a_real_slope_is_reported_through_a_tilted_mount(self) -> None:
+        mount = math.radians(9.0)
+        slope = math.radians(5.0)
+        level_reference = (0.0, math.sin(mount), math.cos(mount))
+        on_slope = (0.0, math.sin(mount + slope), math.cos(mount + slope))
+        pitch, roll = mpu.base_attitude(on_slope, level_reference)
+        self.assertAlmostEqual(pitch, 5.0, places=3)
+        self.assertAlmostEqual(roll, 0.0, places=6)
+
+    def test_magnitude_does_not_affect_the_offset(self) -> None:
+        """The accelerometer reads 0.960 g on this part; direction is what matters."""
+        full = mpu.mounting_offset((0.05, 0.16, 0.985))
+        scaled = mpu.mounting_offset((0.048, 0.1536, 0.9456))
+        self.assertAlmostEqual(full[0], scaled[0], places=6)
+        self.assertAlmostEqual(full[1], scaled[1], places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

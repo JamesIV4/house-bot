@@ -125,8 +125,18 @@ class MatrixMotorRuntime:
             right = -right
         new_actions = actions_for_wheels(left, right)
         if new_actions != self.actions:
-            self.release_columns()
-            for name in MATRIX_PINS:
+            # Release and reset ONLY the actions that stopped being commanded.
+            #
+            # This used to release every column and reset every action's scan
+            # state on any change. That is fine for steady commands, but
+            # heading control drops individual command slots on one tread at
+            # 20 Hz, and each of those changes tore down the *other* tread's
+            # column too, every 50 ms against a 40 ms scan period. The tread
+            # that was supposed to keep running lost most of its press windows,
+            # so steering one tread down slowed the other one more, and the
+            # correction drove the base further off course instead of back.
+            for name in set(self.actions) - set(new_actions):
+                self.release_action(name)
                 self.row_was_low[name] = False
                 self.window_enabled[name] = False
                 self.duty_accumulator[name] = 0.0
@@ -167,6 +177,12 @@ class MatrixMotorRuntime:
             self.row_was_low[name] = row_low
             if not row_low:
                 self.window_enabled[name] = False
+
+    def release_action(self, name: str) -> None:
+        """Return one action's column to a high-impedance input."""
+        _row_pin, column_pin = MATRIX_PINS[name]
+        self.gpio.setup(column_pin, self.gpio.IN, pull_up_down=self.gpio.PUD_OFF)
+        self.sink_active[name] = False
 
     def release_columns(self) -> None:
         for pin in self.column_pins:

@@ -8,10 +8,21 @@ and the receiver's variable wake-up all move the result. Yaw feedback removes
 the need for that table -- the base turns until it has actually turned.
 
 The base has no proportional speed (D-020), so this is a bang-bang controller:
-full power until the projected stop point, then release. Because the base
-coasts, the stop is issued early by `lead_seconds` worth of the current yaw
-rate. The coast measured after each turn is written back to the calibration
-file, so the lead converges on its own.
+full power until the stop point, then release. Because the base coasts, the
+release comes a whole coast angle short of the target, and the coast measured
+after each turn is written back to the calibration file so it converges on its
+own.
+
+Coast is a constant angle here, not a constant time: stops at 150.4 and
+124.8 dps both coasted about 33.5 degrees, so scaling a time-based lead by the
+yaw rate mispredicts as the rate varies.
+
+No priming. The wake pulse in `drive_primed.py` existed because the receiver
+swallows a variable amount of the first command after it sleeps, which ruined
+a turn measured by stopwatch. A closed-loop turn simply keeps driving until the
+angle arrives, so a slow wake costs time rather than accuracy. What the wake
+does still affect is *when* motion starts, so the controller waits for real
+rotation before judging anything about it.
 
 Sign convention follows REP-103 and the IMU mounting: positive degrees are a
 left turn, counter-clockwise seen from above.
@@ -36,15 +47,22 @@ DEFAULT_MOTOR_PORT = 8765
 DEFAULT_IMU_PORT = 8766
 CALIBRATION_PATH = Path(__file__).resolve().parent.parent / "config" / "local" / "imu_turn_calibration.json"
 
-# Conservative until the base measures its own coast: a 180 dps pivot travels
-# about 18 degrees in 0.10 s, so starting lower undershoots rather than
-# overshooting, and undershoot is correctable while overshoot costs a reversal.
-DEFAULT_LEAD_SECONDS = 0.10
+# Coast is modelled as a constant ANGLE, not a constant time. Measured on this
+# base 2026-08-27: 33.76 deg after a stop at 150.4 dps, and 33.27 deg after a
+# stop at 124.8 dps. A 20% difference in rate moved the coast by 1.5%, so a
+# time-based lead multiplied by the rate mispredicts as the rate varies.
+# Conservative until a base measures its own: undershoot is recoverable,
+# overshoot costs a reversal.
+DEFAULT_COAST_DEG = 15.0
 CONTROL_TICK_S = 0.002
 SETTLE_SECONDS = 0.7
 SUBSCRIBE_REFRESH_S = 1.0
-DIRECTION_CHECK_AFTER_S = 0.45
-DIRECTION_CHECK_MIN_DPS = 8.0
+# Rotation this fast is unambiguously the base moving rather than gyro noise.
+MOTION_DETECT_DPS = 8.0
+# How long to wait for that motion before calling the base unresponsive. It has
+# to clear the receiver's unprimed wake, which swallows a variable and
+# unmeasured part of the first command after it sleeps.
+DEFAULT_MOTION_TIMEOUT_S = 2.5
 
 
 class ImuError(RuntimeError):
@@ -74,13 +92,23 @@ class YawReading:
 class ImuClient:
     """Subscriber for `imu_service.py`."""
 
-    def __init__(self, host: str, port: int = DEFAULT_IMU_PORT, timeout: float = 2.0) -> None:
+    def __init__(
+        self,
+        host: str,
+        port: int = DEFAULT_IMU_PORT,
+        timeout: float = 2.0,
+        record_history: bool = False,
+    ) -> None:
         self.address = (host, port)
         self.timeout = timeout
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.setblocking(False)
         self.latest: YawReading | None = None
         self.packets = 0
+        # Recorded at absorb time so the log stays dense through motion, not
+        # only when a caller happens to be idle enough to sample it.
+        self.record_history = record_history
+        self.history: list[tuple[float, float, float]] = []
         self._next_refresh = 0.0
 
     def close(self) -> None:
@@ -106,6 +134,10 @@ class ImuClient:
             stationary=bool(document.get("still", False)),
             tilt_deg=float(document.get("tilt", 0.0)),
         )
+        if self.record_history:
+            self.history.append(
+                (self.latest.received_at, self.latest.yaw_deg, self.latest.rate_dps)
+            )
 
     def pump(self) -> None:
         """Drain queued packets without blocking, keeping the subscription alive."""
@@ -127,12 +159,31 @@ class ImuClient:
             if isinstance(document, dict):
                 self._absorb(document)
 
-    def request(self, document: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
-        """Send a command and wait for the reply carrying the same id."""
+    def request(
+        self,
+        document: dict[str, Any],
+        timeout: float | None = None,
+        retransmit_interval: float = 0.25,
+    ) -> dict[str, Any]:
+        """Send a command and wait for the reply carrying the same id.
+
+        Retransmits while waiting. This is UDP over Wi-Fi alongside a motor
+        command stream, and a single dropped packet used to abort a whole run.
+        Every command is safe to repeat: the service treats a duplicate
+        calibrate from the same address as the same capture rather than
+        restarting it.
+        """
         request_id = secrets.token_hex(4)
-        self._send({**document, "id": request_id})
+        # Deliberately not named `payload`: the receive loop below binds that
+        # to incoming bytes, and reusing it here re-sent those bytes.
+        request_payload = {**document, "id": request_id}
+        self._send(request_payload)
         deadline = time.monotonic() + (timeout if timeout is not None else self.timeout)
+        next_retransmit = time.monotonic() + retransmit_interval
         while time.monotonic() < deadline:
+            if retransmit_interval > 0.0 and time.monotonic() >= next_retransmit:
+                next_retransmit = time.monotonic() + retransmit_interval
+                self._send(request_payload)
             try:
                 payload, _address = self.socket.recvfrom(4096)
             except BlockingIOError:
@@ -149,7 +200,8 @@ class ImuClient:
                 return reply
         raise ImuError(
             f"no reply from the IMU service at {self.address[0]}:{self.address[1]} "
-            f"for {document.get('cmd')!r}"
+            f"for {document.get('cmd')!r} after retransmitting for "
+            f"{timeout if timeout is not None else self.timeout:.1f}s"
         )
 
     def calibrate(self, seconds: float) -> dict[str, Any]:
@@ -275,9 +327,9 @@ def save_calibration(values: dict[str, float], path: Path = CALIBRATION_PATH) ->
     path.write_text(json.dumps(values, indent=2, sort_keys=True) + "\n")
 
 
-def blend_lead(previous: float | None, measured: float, weight: float = 0.35) -> float:
-    """Move the stored lead toward one measurement without chasing noise."""
-    clamped = max(0.0, min(0.5, measured))
+def blend_coast(previous: float | None, measured: float, weight: float = 0.35) -> float:
+    """Move the stored coast angle toward one measurement without chasing noise."""
+    clamped = max(0.0, min(90.0, measured))
     if previous is None:
         return clamped
     return previous + weight * (clamped - previous)
@@ -290,10 +342,11 @@ class TurnResult:
     yaw_at_stop_deg: float
     rate_at_stop_dps: float
     coast_deg: float
-    implied_lead_s: float | None
     duration_s: float
     packets: int
+    correction_floor_deg: float = 0.0
     corrections: int = 0
+    nudges: int = 0
     stopped_cleanly: bool = True
     aborted: str | None = None
     history: list[str] = field(default_factory=list)
@@ -309,12 +362,14 @@ class TurnResult:
             f"error       {self.error_deg:+8.2f} deg",
             f"coast       {self.coast_deg:+8.2f} deg after stop "
             f"(at {self.rate_at_stop_dps:+.1f} dps)",
+            f"floor       {self.correction_floor_deg:8.2f} deg, the smallest "
+            "correction this base can make",
             f"duration    {self.duration_s:8.2f} s over {self.packets} packets",
         ]
-        if self.implied_lead_s is not None:
-            lines.append(f"implied lead{self.implied_lead_s:8.3f} s")
         if self.corrections:
             lines.append(f"corrections {self.corrections:8d}")
+        if self.nudges:
+            lines.append(f"nudges      {self.nudges:8d}")
         if self.aborted:
             lines.append(f"ABORTED: {self.aborted}")
         return "\n".join(lines)
@@ -324,9 +379,10 @@ def drive_until_angle(
     motors: MotorStream,
     imu: ImuClient,
     target_deg: float,
-    lead_seconds: float,
+    coast_deg: float,
     max_seconds: float,
     check_direction: bool,
+    motion_timeout_s: float = DEFAULT_MOTION_TIMEOUT_S,
 ) -> tuple[float, float, float, str | None]:
     """Stream a pivot until the projected yaw reaches target_deg.
 
@@ -334,11 +390,22 @@ def drive_until_angle(
     drive time, and an abort reason if one applies. The command refresh runs at
     the stream's own rate while the stop condition is evaluated every tick, so
     the release is not quantised to the 50 ms packet interval.
+
+    Direction is judged the moment real rotation first appears rather than at a
+    fixed offset from the command. Without a wake pulse the base can sit still
+    for a good fraction of a second before the receiver acts, and a fixed check
+    would read that silence as a fault.
     """
-    direction = 1.0 if target_deg >= 0.0 else -1.0
+    # Direction comes from the remaining error, not from the sign of the
+    # target. A correction can start anywhere: turning from +109 deg back to a
+    # +90 deg target is a RIGHT turn even though the target is positive.
+    imu.pump()
+    start_yaw, _start_rate = imu.yaw_now()
+    direction = 1.0 if target_deg >= start_yaw else -1.0
     left, right = MOTIONS["left" if direction > 0 else "right"]
     started = time.monotonic()
     abort: str | None = None
+    moving = False
 
     while True:
         now = time.monotonic()
@@ -349,24 +416,29 @@ def drive_until_angle(
         if elapsed >= max_seconds:
             abort = f"timeout after {max_seconds:.1f}s at {yaw:+.1f} deg"
             break
-        if check_direction and elapsed >= DIRECTION_CHECK_AFTER_S:
-            if abs(rate) < DIRECTION_CHECK_MIN_DPS:
-                abort = (
-                    f"base is not turning ({rate:+.1f} dps after {elapsed:.2f}s); "
-                    "receiver asleep, battery flat, or motor service not running"
-                )
-                break
-            if math.copysign(1.0, rate) != direction:
-                abort = (
-                    f"base is turning the wrong way ({rate:+.1f} dps for a "
-                    f"{'left' if direction > 0 else 'right'} command); check "
-                    "--invert-left/--swap-sides on the motor service"
-                )
-                break
-            check_direction = False
 
-        projected = yaw + rate * lead_seconds
-        if direction * projected >= direction * target_deg:
+        if not moving:
+            if abs(rate) >= MOTION_DETECT_DPS:
+                moving = True
+                if check_direction and math.copysign(1.0, rate) != direction:
+                    abort = (
+                        f"base is turning the wrong way ({rate:+.1f} dps for a "
+                        f"{'left' if direction > 0 else 'right'} command); check "
+                        "--invert-left/--invert-right/--swap-sides on the motor service"
+                    )
+                    break
+            elif elapsed >= motion_timeout_s:
+                abort = (
+                    f"base never started turning within {motion_timeout_s:.1f}s "
+                    f"({rate:+.1f} dps); receiver asleep or out of range, battery "
+                    "flat, or motor service not running"
+                )
+                break
+
+        # Release a whole coast angle short of the target. `yaw` is already
+        # extrapolated across transport latency by the client, so this is the
+        # only correction the stop needs.
+        if direction * yaw >= direction * target_deg - coast_deg:
             break
 
         motors.refresh(left, right)
@@ -375,6 +447,151 @@ def drive_until_angle(
     imu.pump()
     yaw_at_stop, rate_at_stop = imu.yaw_now()
     return yaw_at_stop, rate_at_stop, time.monotonic() - started, abort
+
+
+# Three ways to rotate, in decreasing order of how far one pulse moves the
+# base. Measured, not assumed -- kinematically one tread forward and one tread
+# backward should sweep the same angle, but on this drivetrain they do not.
+#
+# Measured 2026-08-27 after the duplicate-net wiring fix, two independent
+# sweeps of four trials per cell. Only pulses of 0.08 s and longer reproduce:
+#
+#   pulse   tread-forward      tread-reverse      pivot
+#   0.05     8.7 -> 3.0         8.3 -> 7.8        15.7  (all unrepeatable)
+#   0.08    11.2 -> 12.0       11.1 -> 11.6       22.7
+#   0.12    14.4 -> 13.9       13.9 -> 13.5       28.8
+#   0.20    20.8 -> 20.5       20.6 -> 19.9       40.7
+#
+# 0.05 s is a single command packet, so whether it lands inside a scan window
+# is chance; both tread modes swing wildly there across sweeps. A first sweep
+# suggested tread-reverse managed 8.3 deg +/-1.0 at 0.05 s, which the repeat
+# did not reproduce.
+#
+# At 0.08 s, the shortest reliable length, the two tread modes are equal within
+# noise. tread-forward is the default because its spread stays tighter at
+# longer pulses (+/-1.0 and +/-2.0 at 0.12 and 0.20 s, against tread-reverse's
+# +/-2.3 and +/-4.3).
+#
+# The practical floor for a stationary nudge is therefore about 12 deg, so
+# residuals down to roughly 14 deg can be closed standing still. A typical
+# post-turn residual is 1-6 deg, well below that, so --nudge-pulse stays 0 by
+# default and heading is corrected while driving; see drive_heading.py.
+#
+ROTATION_MODES: dict[str, tuple[str, str]] = {
+    "pivot": ("left", "right"),
+    "tread-forward": ("right-tread-forward", "left-tread-forward"),
+    "tread-reverse": ("left-tread-reverse", "right-tread-reverse"),
+}
+DEFAULT_NUDGE_MODE = "tread-forward"
+
+
+def rotation_command(mode: str, direction: float) -> tuple[float, float]:
+    """Wheel command that rotates the base the given way in the given mode.
+
+    Left is positive, counter-clockwise seen from above, matching the IMU.
+    """
+    if mode not in ROTATION_MODES:
+        raise ValueError(f"unknown rotation mode {mode!r}; choose from {sorted(ROTATION_MODES)}")
+    left_motion, right_motion = ROTATION_MODES[mode]
+    return MOTIONS[left_motion if direction > 0 else right_motion]
+
+
+@dataclass
+class NudgeOutcome:
+    """One short stationary pulse and what it actually achieved."""
+
+    pulse_seconds: float
+    before_deg: float
+    after_deg: float
+    direction: float
+    mode: str = "pivot"
+
+    @property
+    def moved_deg(self) -> float:
+        return self.after_deg - self.before_deg
+
+
+def pulse_rotate(
+    motors: MotorStream,
+    imu: ImuClient,
+    direction: float,
+    pulse_seconds: float,
+    mode: str = "pivot",
+    settle_seconds: float = SETTLE_SECONDS,
+) -> NudgeOutcome:
+    """Rotate briefly in one mode, then settle and measure what it achieved.
+
+    Two levers make a pulse smaller than a full-power turn: a short pulse never
+    reaches full speed, so it carries less momentum into the stop and coasts
+    less; and driving one tread instead of two sweeps a smaller angle for the
+    same command. Together they are the only way this base rotates less than
+    its full-power coast, since it has no proportional speed.
+    """
+    imu.pump()
+    before, _rate = imu.yaw_now()
+    left, right = rotation_command(mode, direction)
+
+    deadline = time.monotonic() + pulse_seconds
+    motors.send_now(left, right)
+    while time.monotonic() < deadline:
+        # Refresh anyway: a pulse longer than the Pi's 350 ms watchdog would
+        # otherwise release the treads mid-pulse.
+        motors.refresh(left, right)
+        imu.pump()
+        time.sleep(CONTROL_TICK_S)
+    motors.stop()
+
+    after = settle_and_read(imu, settle_seconds)
+    return NudgeOutcome(pulse_seconds, before, after, direction, mode)
+
+
+def nudge_to_heading(
+    motors: MotorStream,
+    imu: ImuClient,
+    target_deg: float,
+    tolerance_deg: float,
+    pulse_seconds: float,
+    max_pulses: int,
+    history: list[str],
+    mode: str = DEFAULT_NUDGE_MODE,
+) -> float:
+    """Close a residual heading error with short pulses while stationary.
+
+    Returns the final heading. Stops early on three conditions, each of which
+    means further pulses would make things worse rather than better: the error
+    is inside tolerance, a pulse moved the base further from the target than it
+    started, or a pulse produced no motion at all.
+    """
+    imu.pump()
+    heading, _rate = imu.yaw_now()
+
+    for attempt in range(max_pulses):
+        error = target_deg - heading
+        if abs(error) <= tolerance_deg:
+            break
+        direction = 1.0 if error > 0.0 else -1.0
+        outcome = pulse_rotate(motors, imu, direction, pulse_seconds, mode)
+        heading = outcome.after_deg
+        new_error = target_deg - heading
+        history.append(
+            f"nudge {attempt + 1}: {pulse_seconds:.2f}s {mode} "
+            f"{'left' if direction > 0 else 'right'} pulse moved "
+            f"{outcome.moved_deg:+.2f} deg, error {error:+.2f} -> {new_error:+.2f}"
+        )
+        if abs(outcome.moved_deg) < 0.3:
+            history.append(
+                f"nudge {attempt + 1}: pulse produced no motion; "
+                "the base cannot be corrected this finely while stationary"
+            )
+            break
+        if abs(new_error) > abs(error):
+            history.append(
+                f"nudge {attempt + 1}: overshot past the target; stopping before "
+                "it oscillates"
+            )
+            break
+
+    return heading
 
 
 def settle_and_read(imu: ImuClient, seconds: float = SETTLE_SECONDS) -> float:
@@ -390,20 +607,25 @@ def execute_turn(
     motors: MotorStream,
     imu: ImuClient,
     target_deg: float,
-    lead_seconds: float,
+    coast_deg: float,
     tolerance_deg: float,
     max_seconds: float,
     max_corrections: int,
     min_correction_deg: float,
     prime_seconds: float,
     prime_gap_seconds: float,
+    motion_timeout_s: float = DEFAULT_MOTION_TIMEOUT_S,
+    nudge_pulse_seconds: float = 0.0,
+    max_nudges: int = 4,
+    nudge_mode: str = DEFAULT_NUDGE_MODE,
 ) -> TurnResult:
     direction = 1.0 if target_deg >= 0.0 else -1.0
 
     if prime_seconds > 0.0:
-        # Same direction as the real move, so any creep the prime causes adds
-        # to the intended turn. Yaw is already zeroed, so that creep is counted
-        # rather than silently added to the final heading.
+        # Off by default: closed-loop turns do not need it. Kept as an escape
+        # hatch only. Same direction as the real move, and yaw is already
+        # zeroed, so any creep the prime causes is counted rather than silently
+        # added to the final heading.
         left, right = MOTIONS["left" if direction > 0 else "right"]
         motors.send_now(left, right)
         time.sleep(prime_seconds)
@@ -414,12 +636,17 @@ def execute_turn(
             time.sleep(0.005)
 
     yaw_at_stop, rate_at_stop, duration, abort = drive_until_angle(
-        motors, imu, target_deg, lead_seconds, max_seconds, check_direction=True
+        motors,
+        imu,
+        target_deg,
+        coast_deg,
+        max_seconds,
+        check_direction=True,
+        motion_timeout_s=motion_timeout_s,
     )
     stopped = motors.stop()
     achieved = settle_and_read(imu)
     coast = achieved - yaw_at_stop
-    implied_lead = coast / rate_at_stop if abs(rate_at_stop) > 5.0 else None
 
     result = TurnResult(
         target_deg=target_deg,
@@ -427,7 +654,6 @@ def execute_turn(
         yaw_at_stop_deg=yaw_at_stop,
         rate_at_stop_dps=rate_at_stop,
         coast_deg=coast,
-        implied_lead_s=implied_lead,
         duration_s=duration,
         packets=motors.sequence,
         stopped_cleanly=stopped,
@@ -440,16 +666,40 @@ def execute_turn(
     if abort is not None:
         return result
 
+    # At full power the base cannot rotate less than it coasts, so the coast
+    # measured on this very turn is the real floor on correction size, and it
+    # is far larger than any fixed constant would guess.
+    coast_floor = abs(coast)
+    min_effective = max(min_correction_deg, coast_floor)
+    result.correction_floor_deg = min_effective
+
     for attempt in range(max_corrections):
         error = target_deg - result.achieved_deg
         if abs(error) <= tolerance_deg:
             break
-        if abs(error) < min_correction_deg:
+        if abs(error) < min_effective:
             result.history.append(
                 f"correction {attempt + 1}: residual {error:+.2f} deg is below the "
-                f"{min_correction_deg:.1f} deg the base can reliably move; accepted"
+                f"{min_effective:.1f} deg floor set by a {coast_floor:.1f} deg coast; "
+                "a full-power turn would overshoot further than the error itself"
             )
+            if nudge_pulse_seconds > 0.0:
+                result.achieved_deg = nudge_to_heading(
+                    motors,
+                    imu,
+                    target_deg,
+                    tolerance_deg,
+                    nudge_pulse_seconds,
+                    max_nudges,
+                    result.history,
+                    nudge_mode,
+                )
+                result.nudges = sum(
+                    1 for line in result.history if line.startswith("nudge ")
+                )
+                result.packets = motors.sequence
             break
+        before_correction = result.achieved_deg
         # The receiver is awake from the main turn, so corrections skip the
         # prime. Coast dominates a short nudge, so aim at the remaining error
         # with the same predictive stop rather than a fixed pulse.
@@ -458,9 +708,10 @@ def execute_turn(
             motors,
             imu,
             correction_target,
-            lead_seconds,
+            coast_deg,
             max_seconds=min(max_seconds, 2.0),
             check_direction=False,
+            motion_timeout_s=motion_timeout_s,
         )
         motors.stop()
         achieved = settle_and_read(imu, 0.5)
@@ -474,6 +725,11 @@ def execute_turn(
         result.packets = motors.sequence
         if abort is not None:
             result.aborted = abort
+            break
+        if abs(achieved - before_correction) < 1.0:
+            result.history.append(
+                f"correction {attempt + 1}: base did not move; abandoning corrections"
+            )
             break
 
     return result
@@ -492,10 +748,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rate", type=float, default=20.0, help="command refresh rate in Hz")
     parser.add_argument("--tolerance", type=float, default=2.0, help="accepted error in degrees")
     parser.add_argument(
-        "--lead",
+        "--coast",
         type=float,
         default=None,
-        help="stop this many seconds of yaw rate early; default is the learned value",
+        help="release this many degrees before the target; default is the learned value",
     )
     parser.add_argument("--max-seconds", type=float, default=6.0)
     parser.add_argument("--corrections", type=int, default=2)
@@ -505,9 +761,37 @@ def build_parser() -> argparse.ArgumentParser:
         default=4.0,
         help="residuals smaller than this are accepted; the base cannot reliably move less",
     )
-    parser.add_argument("--prime", type=float, default=0.05, help="receiver wake pulse in seconds")
+    parser.add_argument(
+        "--motion-timeout",
+        type=float,
+        default=DEFAULT_MOTION_TIMEOUT_S,
+        help="abort if the base has not started turning within this long",
+    )
+    parser.add_argument(
+        "--prime",
+        type=float,
+        default=0.0,
+        help="receiver wake pulse in seconds; not needed for a closed-loop turn "
+             "and off by default, since a slow wake costs time rather than accuracy",
+    )
     parser.add_argument("--prime-gap", type=float, default=0.75)
-    parser.add_argument("--no-prime", action="store_true")
+    parser.add_argument(
+        "--nudge-pulse",
+        type=float,
+        default=0.0,
+        help="length of the short stationary pulse used to close a residual too "
+             "small for a full-power turn; 0 disables. Measure a workable value "
+             "with pulse_response.py before enabling this",
+    )
+    parser.add_argument("--max-nudges", type=int, default=4)
+    parser.add_argument(
+        "--nudge-mode",
+        choices=sorted(ROTATION_MODES),
+        default=DEFAULT_NUDGE_MODE,
+        help="how a stationary nudge rotates. About 12 deg per 0.08 s pulse on "
+             "this base; shorter pulses are not repeatable. Re-measure with "
+             "pulse_response.py",
+    )
     parser.add_argument(
         "--calibrate-seconds",
         type=float,
@@ -534,18 +818,23 @@ def main() -> int:
         raise SystemExit("--corrections must be between 0 and 5")
 
     calibration = load_calibration()
-    key = "lead_seconds_left" if args.degrees >= 0 else "lead_seconds_right"
-    stored_lead = calibration.get(key)
-    lead = args.lead if args.lead is not None else (stored_lead or DEFAULT_LEAD_SECONDS)
-    if not 0.0 <= lead <= 0.5:
-        raise SystemExit("--lead must be between 0 and 0.5 seconds")
+    key = "coast_deg_left" if args.degrees >= 0 else "coast_deg_right"
+    stored_coast = calibration.get(key)
+    coast = args.coast if args.coast is not None else (stored_coast or DEFAULT_COAST_DEG)
+    if not 0.0 <= coast <= 90.0:
+        raise SystemExit("--coast must be between 0 and 90 degrees")
+    if abs(args.degrees) <= coast:
+        raise SystemExit(
+            f"a {abs(args.degrees):.0f} deg turn is smaller than the base's "
+            f"{coast:.1f} deg coast; it cannot be made at full power"
+        )
 
     imu = ImuClient(args.host, args.imu_port)
     motors = MotorStream(args.host, args.motor_port, args.rate)
     try:
         imu.wait_for_stream()
-        print(f"IMU stream up; stopping lead {lead:.3f}s"
-              + ("" if stored_lead is None or args.lead is not None else " (learned)"))
+        print(f"IMU stream up; releasing {coast:.1f} deg before target"
+              + ("" if stored_coast is None or args.coast is not None else " (learned)"))
 
         print(f"calibrating gyro bias for {args.calibrate_seconds:.1f}s; keep the base still...")
         calibrated = imu.calibrate(args.calibrate_seconds)
@@ -562,13 +851,17 @@ def main() -> int:
             motors,
             imu,
             args.degrees,
-            lead,
+            coast,
             args.tolerance,
             args.max_seconds,
             args.corrections,
             args.min_correction,
-            0.0 if args.no_prime else args.prime,
+            args.prime,
             args.prime_gap,
+            args.motion_timeout,
+            args.nudge_pulse,
+            args.max_nudges,
+            args.nudge_mode,
         )
     except ImuError as exc:
         motors.stop()
@@ -591,14 +884,17 @@ def main() -> int:
     if motors.errors:
         print("rejected by motor service: " + "; ".join(sorted(motors.errors)))
 
-    if not args.no_learn and result.aborted is None and result.implied_lead_s is not None:
-        calibration[key] = round(blend_lead(stored_lead, result.implied_lead_s), 4)
+    if not args.no_learn and result.aborted is None and abs(result.coast_deg) > 0.5:
+        calibration[key] = round(blend_coast(stored_coast, abs(result.coast_deg)), 2)
         save_calibration(calibration)
-        print(f"learned {key} -> {calibration[key]:.4f}s ({CALIBRATION_PATH})")
+        print(f"learned {key} -> {calibration[key]:.2f} deg ({CALIBRATION_PATH})")
 
     if result.aborted is not None:
         return 2
-    return 0 if abs(result.error_deg) <= max(args.tolerance, args.min_correction) else 3
+    # A residual smaller than the base's own coast is not a controller failure;
+    # it is the floor imposed by bang-bang control with no proportional speed.
+    acceptable = max(args.tolerance, result.correction_floor_deg)
+    return 0 if abs(result.error_deg) <= acceptable else 3
 
 
 if __name__ == "__main__":

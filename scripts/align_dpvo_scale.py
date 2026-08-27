@@ -11,6 +11,11 @@ from pathlib import Path
 import numpy as np
 
 
+# Below this the two rotation signals do not describe the same motion, and the
+# lag that maximises their correlation is meaningless.
+MIN_YAW_CORRELATION = 0.35
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--trajectory", type=Path, required=True)
@@ -91,6 +96,69 @@ def estimate_time_offset(
     return float(statistics.median(offsets))
 
 
+def estimate_time_offset_from_yaw(
+    trajectory: np.ndarray,
+    route: dict,
+    first_source_time: float,
+    first_arrival: float,
+    search_s: float = 3.0,
+    step_s: float = 0.01,
+) -> tuple[float, float] | None:
+    """Recover capture latency by cross-correlating IMU yaw against visual yaw.
+
+    The turn-marker estimator uses only the handful of commanded pivots and
+    locates each by its single peak rotation sample, so it is limited by how
+    sharply a peak can be picked out of a noisy rate signal. A route logged with
+    the IMU carries a dense, drift-free rotation signal over its whole length,
+    which can be correlated against the visual one directly.
+
+    Returns the lag in seconds and the peak normalised correlation, so a weak
+    match can be rejected rather than trusted.
+    """
+    yaw_log = route.get("yaw_log") or []
+    if len(yaw_log) < 50:
+        return None
+    log = np.asarray(yaw_log, dtype=np.float64)
+    if log.ndim != 2 or log.shape[1] < 3:
+        return None
+
+    # Both signals are magnitudes: the visual rate from `rotation_rate` is
+    # unsigned, and sign conventions between the two frames are not assumed.
+    imu_times = first_source_time + (log[:, 0] - first_arrival)
+    imu_rates = np.abs(log[:, 2])
+    visual_times, visual_rates = rotation_rate(trajectory)
+    visual_rates = np.abs(visual_rates)
+    if visual_times.size < 10:
+        return None
+
+    start = max(imu_times[0], visual_times[0]) + search_s
+    end = min(imu_times[-1], visual_times[-1]) - search_s
+    if end - start < 1.0:
+        return None
+    grid = np.arange(start, end, step_s)
+    imu_grid = np.interp(grid, imu_times, imu_rates)
+    imu_centred = imu_grid - imu_grid.mean()
+    imu_norm = float(np.linalg.norm(imu_centred))
+    if imu_norm < 1e-9:
+        return None
+
+    best_offset = 0.0
+    best_score = -2.0
+    for offset in np.arange(-search_s, search_s + step_s, step_s):
+        visual_grid = np.interp(grid + offset, visual_times, visual_rates)
+        centred = visual_grid - visual_grid.mean()
+        norm = float(np.linalg.norm(centred))
+        if norm < 1e-9:
+            continue
+        score = float(np.dot(imu_centred, centred) / (imu_norm * norm))
+        if score > best_score:
+            best_score = score
+            best_offset = float(offset)
+    if best_score <= 0.0:
+        return None
+    return best_offset, best_score
+
+
 def nearest_index(timestamps: np.ndarray, target: float) -> int:
     return int(np.argmin(np.abs(timestamps - target)))
 
@@ -130,14 +198,40 @@ def main() -> int:
         time_offset = args.time_offset
         print(f"Using supplied time offset: {time_offset:+.3f}s")
     else:
-        estimated = estimate_time_offset(trajectory, route, first_source_time, first_arrival)
+        from_yaw = estimate_time_offset_from_yaw(
+            trajectory, route, first_source_time, first_arrival
+        )
+        from_turns = estimate_time_offset(trajectory, route, first_source_time, first_arrival)
+
+        estimated: float | None = None
+        source = ""
+        if from_yaw is not None:
+            yaw_offset, correlation = from_yaw
+            if correlation >= MIN_YAW_CORRELATION:
+                estimated = yaw_offset
+                source = f"IMU yaw (correlation {correlation:.2f})"
+                if from_turns is not None:
+                    print(
+                        f"Commanded-turn estimate {from_turns:+.3f}s, IMU yaw estimate "
+                        f"{yaw_offset:+.3f}s, difference {abs(yaw_offset - from_turns):.3f}s"
+                    )
+            else:
+                print(
+                    f"IMU yaw correlation is only {correlation:.2f}; the two rotation "
+                    "signals do not describe the same motion. Falling back to the "
+                    "commanded-turn estimate."
+                )
+        if estimated is None:
+            estimated = from_turns
+            source = "commanded turns"
         if estimated is None:
             raise RuntimeError(
-                "Could not estimate capture latency: the route has no turn segments "
-                "to synchronise against. Supply --time-offset."
+                "Could not estimate capture latency: no usable IMU yaw log and no "
+                "turn segments to synchronise against. Supply --time-offset."
             )
         time_offset = estimated
-        print(f"Estimated capture latency from commanded turns: {time_offset:+.3f}s")
+        print(f"Estimated capture latency from {source}: {time_offset:+.3f}s")
+
     first_source_time += time_offset
 
     samples = []

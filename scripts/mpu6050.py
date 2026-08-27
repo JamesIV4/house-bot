@@ -345,6 +345,38 @@ def describe_orientation(accel: Sequence[float]) -> tuple[bool, str]:
     return True, f"mount {verdict}: {tilt:.1f} deg from vertical, |accel| = {magnitude:.3f} g"
 
 
+def mounting_offset(level_accel: Sequence[float]) -> tuple[float, float]:
+    """Board pitch and roll, in degrees, from a capture taken on level ground.
+
+    The GY-521 is bolted to the chassis at whatever angle the mounting allows;
+    this base reads 8-10 degrees off vertical. That costs nothing for yaw, which
+    is projected onto measured gravity, but it means raw board pitch and roll
+    are not base pitch and roll. Capturing gravity once with the base on a
+    known-level surface gives the fixed offset between the two.
+
+    Pitch is rotation about the board's X axis (nose up positive) and roll about
+    its Y axis, matching the documented mounting of +Y forward, +X right.
+    """
+    up = unit(level_accel)
+    pitch = math.degrees(math.atan2(up[1], up[2]))
+    roll = math.degrees(math.atan2(-up[0], up[2]))
+    return pitch, roll
+
+
+def base_attitude(
+    accel: Sequence[float],
+    level_accel: Sequence[float],
+) -> tuple[float, float]:
+    """Base pitch and roll now, with the mounting offset removed.
+
+    Returns zeros when the base is back on the surface the reference was taken
+    on, whatever angle the board itself sits at.
+    """
+    pitch_now, roll_now = mounting_offset(accel)
+    pitch_ref, roll_ref = mounting_offset(level_accel)
+    return pitch_now - pitch_ref, roll_now - roll_ref
+
+
 def open_bus(bus_number: int = 1) -> I2CBus:
     """Open /dev/i2c-N through smbus2, falling back to the older smbus."""
     try:

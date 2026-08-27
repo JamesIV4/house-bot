@@ -104,6 +104,11 @@ class ImuService:
             "bias": [round(axis, 5) for axis in estimator.gyro_bias],
             "tilt": round(estimator.tilt_degrees(), 2),
             "still": estimator.stationary,
+            "accel": (
+                [round(axis, 5) for axis in self.estimator.gravity]
+                if self.estimator.gravity is not None
+                else None
+            ),
             "temp": round(self.latest.temperature_c, 2) if self.latest else None,
             "hz": round(self.measured_hz, 1),
             "samples": estimator.samples,
@@ -154,6 +159,12 @@ class ImuService:
                     "id": request_id,
                     "error": f"seconds must be between 0.2 and {MAX_CALIBRATION_S}",
                 }
+            if self.pending is not None and self.pending.address == address:
+                # A retransmitted request, not a new one. Keep the capture and
+                # its deadline; only the id to reply to changes. Restarting
+                # here would mean a client that retransmits never finishes.
+                self.pending.request_id = request_id
+                return None
             self.pending = PendingCalibration(
                 address=address,
                 deadline=time.monotonic() + seconds,
@@ -183,6 +194,7 @@ class ImuService:
             "id": pending.request_id,
             "bias": [round(axis, 5) for axis in estimate.bias],
             "noise": [round(axis, 5) for axis in estimate.noise_dps],
+            "level_accel": [round(axis, 5) for axis in estimate.accel],
             "calibration_samples": estimate.samples,
             "oriented": oriented,
             "orientation": orientation,

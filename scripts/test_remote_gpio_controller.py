@@ -139,10 +139,10 @@ class RemoteGpioControllerTests(unittest.TestCase):
         self.assertEqual(
             remote.MATRIX_PINS,
             {
-                "left-forward": (5, 4),
-                "left-reverse": (7, 6),
-                "right-forward": (9, 8),
-                "right-reverse": (11, 10),
+                "left-forward": (18, 17),
+                "left-reverse": (18, 22),
+                "right-forward": (19, 22),
+                "right-reverse": (19, 17),
             },
         )
         self.assertEqual(
@@ -154,6 +154,38 @@ class RemoteGpioControllerTests(unittest.TestCase):
                 "right": ("left-forward", "right-reverse"),
             },
         )
+
+    def test_the_matrix_uses_one_pin_per_electrical_net(self) -> None:
+        """The harness wires every net twice; using both pins breaks pairs.
+
+        Driving one pin of a net low and releasing the other does not release
+        the net, so an intended single press becomes two buttons. Only pairs
+        are affected, which is why every action verified correctly alone.
+        """
+        used = {pin for pair in remote.MATRIX_PINS.values() for pin in pair}
+        for name, (first, second) in remote.MATRIX_NETS.items():
+            with self.subTest(net=name):
+                self.assertFalse(
+                    first in used and second in used,
+                    f"net {name} is driven through both BCM{first} and BCM{second}",
+                )
+                self.assertTrue(first in used or second in used, f"net {name} is unused")
+
+    def test_the_matrix_is_two_rows_by_two_columns(self) -> None:
+        rows = {row for row, _column in remote.MATRIX_PINS.values()}
+        columns = {column for _row, column in remote.MATRIX_PINS.values()}
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(columns), 2)
+        # Every row/column intersection is a distinct button.
+        self.assertEqual(len(set(remote.MATRIX_PINS.values())), 4)
+        self.assertFalse(rows & columns, "a pin is used as both a row and a column")
+
+    def test_each_wheel_direction_sits_at_its_own_intersection(self) -> None:
+        pins = remote.MATRIX_PINS
+        self.assertEqual(pins["left-forward"][0], pins["left-reverse"][0])
+        self.assertEqual(pins["right-forward"][0], pins["right-reverse"][0])
+        self.assertEqual(pins["left-forward"][1], pins["right-reverse"][1])
+        self.assertEqual(pins["left-reverse"][1], pins["right-forward"][1])
 
     def test_matrix_actions_reject_opposed_wheel_commands(self) -> None:
         with self.assertRaisesRegex(ValueError, "left wheel"):
@@ -198,6 +230,75 @@ class ScanClassifierTests(unittest.TestCase):
         low_widths, periods = scan_trace(2.0, width_us=9_000.0)
         verdict, _detail = remote.classify_scan_pin(low_widths, periods, 2.0)
         self.assertEqual(verdict, "unclear")
+
+
+class SharedNetTests(unittest.TestCase):
+    """The fault that cost a session: eight wires, four nets.
+
+    `identify-rows` classified every wire correctly and each action worked
+    alone, so nothing looked wrong until a command pressed two buttons at once
+    and actuated a third.
+    """
+
+    # Measured on the GT004 harness, 2026-08-27.
+    REAL_NETS = {17: [26], 26: [17], 18: [23], 23: [18], 22: [16], 16: [22], 19: [20], 20: [19]}
+
+    def fake_driver(self, nets: dict[int, list[int]]):
+        def drive(pin: int, others):
+            return [other for other in others if other in nets.get(pin, [])]
+
+        return drive
+
+    def test_the_real_harness_collapses_to_four_nets(self) -> None:
+        pins = sorted(self.REAL_NETS)
+        nets = remote.detect_shared_nets(pins, self.fake_driver(self.REAL_NETS))
+        groups = remote.net_groups(nets)
+        self.assertEqual(len(groups), 4)
+        self.assertIn((17, 26), groups)
+        self.assertIn((18, 23), groups)
+        self.assertIn((16, 22), groups)
+        self.assertIn((19, 20), groups)
+
+    def test_independent_wires_are_left_alone(self) -> None:
+        pins = [4, 5, 6, 7]
+        groups = remote.net_groups(remote.detect_shared_nets(pins, self.fake_driver({})))
+        self.assertEqual(groups, [(4,), (5,), (6,), (7,)])
+
+    def net_of(self, pin: int) -> frozenset[int]:
+        return frozenset({pin, *self.REAL_NETS.get(pin, [])})
+
+    def test_duplicates_are_rewritten_to_one_pin_per_net(self) -> None:
+        """Which pin represents a net is arbitrary; the net it names is not."""
+        resolved = {
+            "left-forward": (18, 17),
+            "left-reverse": (23, 22),
+            "right-forward": (19, 16),
+            "right-reverse": (20, 26),
+        }
+        groups = remote.net_groups(
+            remote.detect_shared_nets(sorted(self.REAL_NETS), self.fake_driver(self.REAL_NETS))
+        )
+        rewritten = remote.matrix_pins_from_nets(resolved, groups)
+
+        # Every action must still address the same electrical intersection as
+        # the hand-verified map, even if it names it by the other pin.
+        for name, (row, column) in remote.MATRIX_PINS.items():
+            with self.subTest(action=name):
+                self.assertEqual(self.net_of(rewritten[name][0]), self.net_of(row))
+                self.assertEqual(self.net_of(rewritten[name][1]), self.net_of(column))
+
+        used = {pin for pair in rewritten.values() for pin in pair}
+        self.assertEqual(len(used), 4, "a net is still referenced by two pins")
+
+    def test_the_shipped_map_uses_one_pin_per_net(self) -> None:
+        used = {pin for pair in remote.MATRIX_PINS.values() for pin in pair}
+        nets = {self.net_of(pin) for pin in used}
+        self.assertEqual(len(nets), len(used), "two pins in MATRIX_PINS share a net")
+
+    def test_rewriting_is_a_no_op_when_every_wire_is_its_own_net(self) -> None:
+        resolved = {"left-forward": (5, 4)}
+        groups = remote.net_groups(remote.detect_shared_nets([4, 5], self.fake_driver({})))
+        self.assertEqual(remote.matrix_pins_from_nets(resolved, groups), resolved)
 
 
 class IdentifyRowsTests(unittest.TestCase):

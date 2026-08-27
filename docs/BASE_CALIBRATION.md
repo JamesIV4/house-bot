@@ -53,33 +53,65 @@ captures tread scrub better than the outside-to-outside dimension.
 The base bridge publishes `base_link -> camera_link` from these measurements
 and the standard fixed `camera_link -> camera_optical_frame` rotation.
 
-## 3. Record full-power motion trials
+## 3. Record the IMU mounting offset
 
-Copy the worksheet; the local copy is ignored by Git.
-
-```bash
-mkdir -p config/local
-cp config/base-calibration-measurements.example.json \
-  config/local/base_calibration_measurements.json
-```
-
-Mark the starting tread midpoint and heading approximately. Run every command
-once, letting the robot reach a complete stop before measuring. Enter positive travel
-distances for forward/reverse, signed straight-run heading change (left positive,
-right negative), and positive turn magnitudes for left/right.
+The GY-521 is bolted on at whatever angle the mounting allows; this base reads
+8-10 degrees off vertical. That costs nothing for yaw, which is projected onto
+measured gravity, but it means raw board pitch and roll are not base pitch and
+roll. Capture the fixed offset once, with the base on a surface you have
+confirmed level:
 
 ```bash
-python3 scripts/send_motor_command.py forward --duration 3 --power 1
-python3 scripts/send_motor_command.py reverse --duration 3 --power 1
-python3 scripts/send_motor_command.py left    --duration 3 --power 1
-python3 scripts/send_motor_command.py right   --duration 3 --power 1
+python3 scripts/imu_monitor.py --record-level
+python3 scripts/imu_monitor.py --attitude     # should now read about 0, 0
 ```
 
-If two seconds would leave the clear test area, use the same shorter duration
-in both the command and worksheet. Never estimate a measurement that was not
-taken.
+This writes `config/local/imu_mount.json`. It is not needed for the trials
+below, only for any later use of base attitude.
 
-## 4. Solve and review
+## 4. Record full-power motion trials
+
+Heading is measured by the IMU, not by eye. Distance still needs a tape.
+
+```bash
+python3 scripts/calibrate_base_trials.py forward --duration 3 --repeats 3
+python3 scripts/calibrate_base_trials.py reverse --duration 3 --repeats 3
+python3 scripts/calibrate_base_trials.py left    --duration 3 --repeats 3
+python3 scripts/calibrate_base_trials.py right   --duration 3 --repeats 3
+```
+
+Each trial re-calibrates gyro bias while stationary, zeroes yaw, runs one
+bounded full-power command, settles, and records the heading change. Straight
+trials prompt for the measured distance; pivot trials need no manual entry at
+all. Results append to `config/local/base_calibration_measurements.json`, so
+`calibrate_base.py` averages the repeats and flags inconsistency.
+
+Mark the starting tread midpoint and heading before each straight trial, and
+let the robot reach a complete stop before measuring. Never estimate a
+measurement that was not taken.
+
+**These trials are deliberately open-loop.** `calibrate_base.py` derives the
+per-tread speed split from the heading change during a straight run -- that
+asymmetry is the signal being measured. Running them through
+`drive_heading.py` would steer out the very thing being fitted. Heading control
+belongs on the scale route, not here.
+
+If three seconds would leave the clear test area, use a shorter `--duration`;
+it is recorded with each trial.
+
+### Previous calibration quarantined
+
+The 2026-08-23 calibration was fitted before the remote rewire, before
+`--invert-left` was removed, and before the duplicate-net wiring fault was
+found. Under that fault paired commands behaved differently from single ones,
+which is exactly what the solver fits, so the tread speeds and track width in
+it cannot be trusted. Those files are renamed `*.pre-2026-08-27-rewire.bak` so
+nothing reads them silently, and `drive_distance.py`,
+`drive_straight_compensated.py`, and the scale route now fail loudly until the
+calibration is redone. See
+`docs/experiments/2026-08-27-remote-remap-and-imu.md`.
+
+## 5. Solve and review
 
 ```bash
 python3 scripts/calibrate_base.py \
@@ -93,7 +125,7 @@ Nav2 radius with a conservative rectangular footprint. A coefficient of
 variation above 20% produces `CALIBRATION_QUALITY=REVIEW` instead of silently
 accepting inconsistent trials.
 
-## 5. Supervised ROS base check
+## 6. Supervised ROS base check
 
 Start the real base bridge in one terminal. It stays disabled.
 
@@ -127,9 +159,14 @@ After the base calibration passes:
 
 1. repeat a timestamped full-power `config/dpvo-navigation.yaml` route from a
    natural scene, with every segment at least 1.5 seconds and an observer
-   confirming both treads engaged;
+   confirming both treads engaged. `scripts/run_base_calibration_route.py` now
+   drives turns closed-loop against the IMU, holds heading on the straight legs,
+   and logs continuous yaw into the route file;
 2. align DPV-SLAM translation scale to the measured base motion and publish the
-   live metric pose through the ROS frame tree;
+   live metric pose through the ROS frame tree. `align_dpvo_scale.py` recovers
+   capture latency by cross-correlating the route's IMU yaw against the visual
+   rotation, falling back to the commanded-turn markers when the correlation is
+   weak;
 3. replace the binary toy-remote actuation path with a proportional motor
    driver and wheel feedback, then expose it through `ros2_control`'s
    differential-drive controller;

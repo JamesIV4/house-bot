@@ -36,11 +36,41 @@ MOTIONS = {
     "right": ("left-forward", "right-reverse"),
 }
 
+# The GT004 is a 2x2 matrix and the harness wires every net to the Pi TWICE,
+# once at each button that touches it. Measured 2026-08-27 by driving each wire
+# low and reading the others:
+#
+#   net A = BCM17 (blue)   == BCM26 (white)    column
+#   net B = BCM18 (brown)  == BCM23 (black)    row
+#   net C = BCM22 (yellow) == BCM16 (orange)   column
+#   net D = BCM19 (red)    == BCM20 (purple)   row
+#
+#              col net A        col net C
+#   row net B  left-forward     left-reverse
+#   row net D  right-reverse    right-forward
+#
+# Only one pin per net may be used. Treating the eight wires as eight
+# independent pins meant driving and releasing the same net through two
+# different pins: releasing BCM16 does nothing while BCM22 still holds net C
+# low, so one intended press became two buttons. Single actions were unaffected
+# because they only ever touch one pin per net, which is why every action
+# verified correctly on its own and only pairs misbehaved.
+#
+# BCM23, BCM20, BCM16 and BCM26 are deliberately unused: they are duplicates of
+# BCM18, BCM19, BCM22 and BCM17 respectively.
 MATRIX_PINS = {
-    "left-forward": (5, 4),
-    "left-reverse": (7, 6),
-    "right-forward": (9, 8),
-    "right-reverse": (11, 10),
+    "left-forward": (18, 17),
+    "left-reverse": (18, 22),
+    "right-forward": (19, 22),
+    "right-reverse": (19, 17),
+}
+
+# Both wires of each net, for documentation and for identify-rows.
+MATRIX_NETS = {
+    "A-column": (17, 26),
+    "B-row": (18, 23),
+    "C-column": (22, 16),
+    "D-row": (19, 20),
 }
 
 MATRIX_MOTIONS = {
@@ -311,6 +341,86 @@ def identify_matrix_rows(
     return resolved, report
 
 
+def drive_low_and_read(pin: int, others: Sequence[int], samples: int = 40) -> list[int]:
+    """Hold one wire low and report which others follow it."""
+    try:
+        import RPi.GPIO as gpio  # type: ignore[import-not-found]
+    except ImportError as exc:
+        raise RuntimeError("RPi.GPIO is unavailable; net detection must run on the Pi") from exc
+
+    gpio.setwarnings(False)
+    gpio.setmode(gpio.BCM)
+    for other in others:
+        gpio.setup(other, gpio.IN, pull_up_down=gpio.PUD_OFF)
+    followers: list[int] = []
+    try:
+        gpio.setup(pin, gpio.OUT, initial=gpio.LOW)
+        time.sleep(0.004)
+        for other in others:
+            # Rows are scanned, so a shared net reads low almost always while a
+            # merely scanning wire dips low only briefly once per period.
+            lows = sum(1 for _ in range(samples) if int(gpio.input(other)) == 0)
+            if lows >= samples - 2:
+                followers.append(other)
+    finally:
+        gpio.setup(pin, gpio.IN, pull_up_down=gpio.PUD_OFF)
+        time.sleep(0.004)
+    return followers
+
+
+def detect_shared_nets(
+    pins: Sequence[int],
+    drive_low_fn: Callable[[int, Sequence[int]], list[int]],
+) -> dict[int, list[int]]:
+    """Group the harness wires by electrical net.
+
+    Each wire is driven low in turn and the others are read; any that follow
+    are on the same net. Only ever drives low, never high, so it obeys the same
+    rule as every other path here.
+
+    This matters because the GT004 harness wires each net to the Pi twice, once
+    at each button touching it. `identify-rows` alone cannot see that: it
+    classifies each wire correctly and every action then works in isolation,
+    while any command pressing two buttons at once drives and releases the same
+    net through two different pins and actuates a button nobody asked for.
+    """
+    nets: dict[int, list[int]] = {}
+    for pin in pins:
+        others = [other for other in pins if other != pin]
+        followers = drive_low_fn(pin, others)
+        nets[pin] = sorted(followers)
+    return nets
+
+
+def net_groups(nets: dict[int, list[int]]) -> list[tuple[int, ...]]:
+    """Collapse the follower map into one sorted tuple per distinct net."""
+    groups: list[set[int]] = []
+    for pin, followers in nets.items():
+        members = {pin, *followers}
+        for group in groups:
+            if group & members:
+                group |= members
+                break
+        else:
+            groups.append(members)
+    return sorted(tuple(sorted(group)) for group in groups)
+
+
+def matrix_pins_from_nets(
+    resolved: dict[str, tuple[int, int]],
+    groups: Sequence[tuple[int, ...]],
+) -> dict[str, tuple[int, int]]:
+    """Rewrite a resolved map so each net is referenced by exactly one pin."""
+    canonical: dict[int, int] = {}
+    for group in groups:
+        for pin in group:
+            canonical[pin] = group[0]
+    return {
+        name: (canonical.get(row, row), canonical.get(column, column))
+        for name, (row, column) in resolved.items()
+    }
+
+
 def format_matrix_pins(resolved: dict[str, tuple[int, int]]) -> str:
     lines = ["MATRIX_PINS = {"]
     for name in BUTTON_NAMES:
@@ -557,6 +667,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(exc))
         for line in report:
             print(line)
+
+        try:
+            nets = detect_shared_nets(pins, drive_low_and_read)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        groups = net_groups(nets)
+        print()
+        print(f"Electrical nets found: {len(groups)} across {len(pins)} wires")
+        for group in groups:
+            members = ", ".join(f"BCM{pin}" for pin in group)
+            note = "  <- one net, wired to the Pi more than once" if len(group) > 1 else ""
+            print(f"  {members}{note}")
+        if len(groups) < len(pins):
+            print(
+                "\nDuplicate wires collapsed. Only one pin per net may be used: "
+                "driving one and releasing the other does not release the net, "
+                "so a command pressing two buttons actuates a third."
+            )
+            resolved = matrix_pins_from_nets(resolved, groups)
+
         print()
         print(format_matrix_pins(resolved))
         missing = sorted(set(CANDIDATE_PAIRS) - set(resolved))
