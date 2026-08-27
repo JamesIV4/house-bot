@@ -485,6 +485,73 @@ def gated_matrix_pulse(row_pin: int, column_pin: int, duration: float) -> int:
     return low_windows
 
 
+def parse_intersections(spec: str) -> list[tuple[int, int]]:
+    """Parse "row:column,row:column" into gated matrix intersections."""
+    pairs: list[tuple[int, int]] = []
+    for chunk in spec.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        row_text, _, column_text = chunk.partition(":")
+        if not column_text:
+            raise ValueError(f"expected row:column, got {chunk!r}")
+        row, column = int(row_text), int(column_text)
+        for pin in (row, column):
+            if not 0 <= pin <= 27:
+                raise ValueError(f"BCM GPIO must be between 0 and 27, got {pin}")
+        if row == column:
+            raise ValueError(f"row and column must differ, got {chunk!r}")
+        pairs.append((row, column))
+    if not pairs:
+        raise ValueError("no intersections given")
+    return pairs
+
+
+def gate_intersections(
+    pairs: Sequence[tuple[int, int]],
+    duration: float,
+    gpio_module: Any | None = None,
+) -> dict[tuple[int, int], int]:
+    """Gate arbitrary row/column intersections, bypassing MATRIX_PINS.
+
+    Diagnostic counterpart to `gated_matrix_actions`, which can only express the
+    four named actions. When a paired command misbehaves, the question is
+    usually which intersections are actually being actuated, and answering it
+    needs the freedom to gate combinations the action map cannot name.
+    """
+    if gpio_module is None:
+        try:
+            import RPi.GPIO as gpio_module  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError("RPi.GPIO is unavailable; gate-pairs must run on the Pi") from exc
+
+    gpio = gpio_module
+    gpio.setwarnings(False)
+    gpio.setmode(gpio.BCM)
+    pins = sorted({pin for pair in pairs for pin in pair})
+    for pin in pins:
+        gpio.setup(pin, gpio.IN, pull_up_down=gpio.PUD_OFF)
+
+    sink = {pair: False for pair in pairs}
+    windows = {pair: 0 for pair in pairs}
+    deadline = time.perf_counter_ns() + int(duration * 1_000_000_000)
+    try:
+        while time.perf_counter_ns() < deadline:
+            for pair in pairs:
+                row_pin, column_pin = pair
+                row_low = int(gpio.input(row_pin)) == 0
+                if row_low and not sink[pair]:
+                    windows[pair] += 1
+                sink[pair] = apply_matrix_row_level(gpio, column_pin, row_low, sink[pair])
+    finally:
+        for pair in pairs:
+            gpio.setup(pair[1], gpio.IN, pull_up_down=gpio.PUD_OFF)
+        for pin in pins:
+            gpio.setup(pin, gpio.IN, pull_up_down=gpio.PUD_OFF)
+        gpio.cleanup(pins)
+    return windows
+
+
 def validate_matrix_actions(actions: Sequence[str]) -> None:
     unknown = set(actions) - set(MATRIX_PINS)
     if unknown:
@@ -596,6 +663,16 @@ def build_parser() -> argparse.ArgumentParser:
     matrix_pulse.add_argument("--row-pin", type=gpio_pin, default=5, metavar="BCM")
     matrix_pulse.add_argument("--column-pin", type=gpio_pin, default=4, metavar="BCM")
     matrix_pulse.add_argument("--duration", type=bounded_duration, default=0.20)
+
+    gate_pairs = commands.add_parser(
+        "gate-pairs",
+        help="gate arbitrary row:column intersections, for diagnosing paired commands",
+    )
+    gate_pairs.add_argument(
+        "intersections",
+        help='comma-separated row:column pairs in BCM numbering, e.g. "18:17,19:22"',
+    )
+    gate_pairs.add_argument("--duration", type=bounded_duration, default=1.0)
 
     matrix_drive = commands.add_parser(
         "matrix-drive",
@@ -712,6 +789,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(str(exc))
         print(f"Mirrored {low_windows} target-row low windows.")
         return 0 if low_windows else 2
+
+    if args.command == "gate-pairs":
+        try:
+            pairs = parse_intersections(args.intersections)
+        except ValueError as exc:
+            parser.error(str(exc))
+        if args.dry_run:
+            listed = ", ".join(f"row BCM{r}/column BCM{c}" for r, c in pairs)
+            print(f"DRY RUN gate-pairs {listed} for {args.duration:.2f}s")
+            return 0
+        try:
+            windows = gate_intersections(pairs, args.duration)
+        except (RuntimeError, ValueError) as exc:
+            parser.error(str(exc))
+        print(" ".join(f"{r}:{c}={windows[(r, c)]}" for r, c in pairs))
+        return 0 if all(windows.values()) else 2
 
     if args.command == "matrix-drive":
         actions = MATRIX_MOTIONS[args.motion]

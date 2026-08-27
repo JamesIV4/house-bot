@@ -232,6 +232,97 @@ class ScanClassifierTests(unittest.TestCase):
         self.assertEqual(verdict, "unclear")
 
 
+class GatePairsTests(unittest.TestCase):
+    """Arbitrary intersections, for when the named action map is the suspect."""
+
+    def test_a_spec_parses_into_intersections(self) -> None:
+        self.assertEqual(
+            remote.parse_intersections("18:17,19:22"), [(18, 17), (19, 22)]
+        )
+
+    def test_whitespace_and_trailing_commas_are_tolerated(self) -> None:
+        self.assertEqual(remote.parse_intersections(" 18:17 , 19:22 ,"), [(18, 17), (19, 22)])
+
+    def test_a_missing_column_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "expected row:column"):
+            remote.parse_intersections("18")
+
+    def test_a_row_equal_to_its_column_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must differ"):
+            remote.parse_intersections("18:18")
+
+    def test_an_out_of_range_pin_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "between 0 and 27"):
+            remote.parse_intersections("18:99")
+
+    def test_an_empty_spec_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no intersections"):
+            remote.parse_intersections(" , ")
+
+    def make_gpio(self, scanning: set[int] = frozenset()):
+        """GPIO fake whose scanning rows dip low on a repeating read cycle."""
+
+        class ScanningGpio:
+            BCM = "BCM"
+            IN = "IN"
+            OUT = "OUT"
+            PUD_OFF = "PUD_OFF"
+            LOW = 0
+            HIGH = 1
+
+            def __init__(self) -> None:
+                self.setup_calls: list[tuple[int, str, dict]] = []
+                self.reads = 0
+
+            def setwarnings(self, _enabled: bool) -> None:
+                pass
+
+            def setmode(self, _mode: str) -> None:
+                pass
+
+            def setup(self, pin: int, mode: str, **kwargs) -> None:
+                self.setup_calls.append((pin, mode, kwargs))
+
+            def input(self, pin: int) -> int:
+                self.reads += 1
+                if pin in scanning:
+                    return 0 if (self.reads // 4) % 2 else 1
+                return 1
+
+            def cleanup(self, _pins) -> None:
+                pass
+
+        return ScanningGpio()
+
+    def test_gating_never_drives_a_remote_wire_high(self) -> None:
+        gpio = self.make_gpio(scanning={18, 19})
+        remote.gate_intersections([(18, 17), (19, 22)], 0.02, gpio)
+        self.assertTrue(gpio.setup_calls)
+        self.assertFalse(
+            any(call[2].get("initial") == gpio.HIGH for call in gpio.setup_calls)
+        )
+
+    def test_gating_counts_a_window_per_falling_edge(self) -> None:
+        gpio = self.make_gpio(scanning={18})
+        windows = remote.gate_intersections([(18, 17)], 0.05, gpio)
+        self.assertGreater(windows[(18, 17)], 0)
+
+    def test_a_steady_row_yields_no_windows(self) -> None:
+        """A column mistaken for a row shows up as zero windows, not as motion."""
+        gpio = self.make_gpio(scanning=set())
+        windows = remote.gate_intersections([(18, 17)], 0.02, gpio)
+        self.assertEqual(windows[(18, 17)], 0)
+
+    def test_every_column_is_released_afterwards(self) -> None:
+        gpio = self.make_gpio(scanning={18, 19})
+        remote.gate_intersections([(18, 17), (19, 22)], 0.02, gpio)
+        released = [
+            call for call in gpio.setup_calls[-6:]
+            if call[1] == gpio.IN and call[0] in (17, 22)
+        ]
+        self.assertTrue(released, "columns were not returned to inputs")
+
+
 class SharedNetTests(unittest.TestCase):
     """The fault that cost a session: eight wires, four nets.
 

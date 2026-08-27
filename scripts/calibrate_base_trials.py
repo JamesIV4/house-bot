@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -56,6 +57,16 @@ def load_worksheet(path: Path) -> dict[str, Any]:
 def save_worksheet(document: dict[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
+
+
+def fill_distance(document: dict[str, Any], motion: str, distance: float) -> dict[str, Any]:
+    """Set the distance on the most recent trial that is still missing one."""
+    trials = document.get("trials", {}).get(motion, [])
+    for trial in reversed(trials):
+        if trial.get("distance_m") is None:
+            trial["distance_m"] = distance
+            return trial
+    raise SystemExit(f"no {motion} trial is awaiting a distance")
 
 
 def prompt_distance(motion: str) -> float:
@@ -118,6 +129,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calibrate-seconds", type=float, default=2.0)
     parser.add_argument("--worksheet", type=Path, default=WORKSHEET)
     parser.add_argument(
+        "--distance",
+        type=float,
+        default=None,
+        help="measured distance in metres for a straight trial, instead of prompting",
+    )
+    parser.add_argument(
+        "--fill-distance",
+        type=float,
+        default=None,
+        help="set the distance on the most recent trial awaiting one, and exit",
+    )
+    parser.add_argument(
         "--rest",
         type=float,
         default=2.0,
@@ -140,6 +163,19 @@ def main() -> int:
 
     document = load_worksheet(args.worksheet)
     document.setdefault("trials", {}).setdefault(args.motion, [])
+
+    if args.fill_distance is not None:
+        if args.motion not in STRAIGHT:
+            raise SystemExit("--fill-distance applies only to forward and reverse trials")
+        if not 0.0 < args.fill_distance <= 5.0:
+            raise SystemExit("--fill-distance must be between 0 and 5 metres")
+        trial = fill_distance(document, args.motion, args.fill_distance)
+        save_worksheet(document, args.worksheet)
+        print(
+            f"{args.motion}: distance {args.fill_distance:.3f} m recorded against the "
+            f"trial with heading change {trial.get('heading_change_deg'):+.2f} deg"
+        )
+        return 0
 
     imu = ImuClient(args.host, args.imu_port)
     recorded = 0
@@ -164,11 +200,24 @@ def main() -> int:
 
             trial: dict[str, Any] = {"power": args.power, "duration_s": args.duration}
             if args.motion in STRAIGHT:
-                try:
-                    trial["distance_m"] = prompt_distance(args.motion)
-                except KeyboardInterrupt:
-                    print("  discarded")
-                    continue
+                if args.distance is not None:
+                    trial["distance_m"] = args.distance
+                elif sys.stdin.isatty():
+                    try:
+                        trial["distance_m"] = prompt_distance(args.motion)
+                    except KeyboardInterrupt:
+                        print("  discarded")
+                        continue
+                else:
+                    # Driven from a non-interactive shell: record the heading now
+                    # (it cannot be recovered later) and take the tape measurement
+                    # afterwards.
+                    trial["distance_m"] = None
+                    print(
+                        "  distance pending -- record it with:\n"
+                        f"    calibrate_base_trials.py {args.motion} "
+                        "--fill-distance <metres>"
+                    )
                 # Signed: left positive, right negative, matching the IMU and
                 # REP-103. No sign is entered by hand any more.
                 trial["heading_change_deg"] = round(heading, 2)

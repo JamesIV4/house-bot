@@ -504,3 +504,116 @@ forward, and see whether it spins again. That has not been done.
 - forward and reverse heading hold against real drift, re-run cleanly;
 - straight-line distance spread over repeated identical unprimed commands;
 - whether right pivots coast the same as left.
+
+## Handoff: base does not drive straight, calibration blocked
+
+**Status at handoff.** Base calibration is blocked at forward trial 1. The base
+will not drive straight: a 3 s `forward` command spun roughly two-thirds of a
+turn. One forward trial was run and discarded; the worksheet
+`config/local/base_calibration_measurements.json` contains no trials, so nothing
+corrupt is recorded and the sequence can resume from the start.
+
+Nothing below is settled. Today produced several reversals -- a phantom 5.5 deg
+pulse result, a tread asymmetry recorded then retracted then observed again, and
+a wiring change that appeared to fix forward driving and then did not hold. Treat
+every item here as provisional and re-measure before relying on it.
+
+### Observations, this session's final state
+
+Measured with `scripts/probe_matrix.py`, which gates intersections directly on
+the Pi with no motor service, no networking in the gating loop, and no reliance
+on `MATRIX_PINS`. Each run is 1 s.
+
+| Command | Yaw |
+| --- | ---: |
+| left tread forward alone | -154.3 deg |
+| left tread reverse alone | +144.7 deg |
+| right tread forward alone | +72.5 deg |
+| right tread reverse alone | -78.5 deg |
+| `forward`, both treads | -138.4 deg |
+| `reverse`, both treads | +152.7 deg |
+| pivot left, both treads | +153.0 deg |
+
+Two things stand out, neither explained:
+
+- the left tread turns the base about twice as fast as the right, individually;
+- every paired command lands close to its left action alone. `reverse` should be
+  near zero and instead reads +152.7 deg, which is left-reverse alone.
+
+A 3 s single-tread run of the right tread fluctuated between 56 and 93 dps with
+no steady decay across the run.
+
+Earlier the same day, the same commands drove the base nearly straight: -8.74 deg
+over a 2 s open-loop forward, and +0.14 deg closed-loop. Both treads must have
+been engaging and closely matched then. Something changed during the session;
+what, is not established.
+
+### What appears ruled out, and how
+
+Stated as evidence rather than conclusions. Each was checked once or twice, not
+repeatedly, and today showed that single measurements here can mislead.
+
+- **Action mapping.** Each of the four actions was verified individually and
+  moved the tread its name claims, in the direction its name claims.
+- **Pi-side gating.** Both actions of a pair mirror the full 25 scan windows per
+  second, simultaneously.
+- **Loop service order.** Reversing which action the gating loop services first
+  changed the result by 6 deg out of 160, well inside run-to-run variation.
+- **Motor service and its networking.** The fault reproduces in a bare tight loop
+  that runs no service and does no socket work.
+- **Column release timing.** With two actions active the column is held low for
+  160-249 us against a 428 us gap to the next row's scan window; 0 of 148 presses
+  overran. Note this was measured with dummy pins in a tight loop, not inside the
+  service.
+
+### Open hypotheses, untested
+
+- **Motor battery low.** The pack had been driving all day. A weak pack would let
+  either motor run alone while sagging under two, stalling the weaker one. This
+  would account for both the 2:1 imbalance and the paired-command dropout with one
+  cause, which is why it is listed first -- not because it has any evidence over
+  the others.
+- **Right tread mechanically impaired.** The base struck obstacles at least twice
+  during the session. The 56-93 dps fluctuation within a single run is at least as
+  consistent with slipping as with a clean motor.
+- **Remote transmits only one key at a time.** Would explain the paired dropout
+  but not the single-tread imbalance, and paired commands demonstrably worked
+  earlier both today and before the rewire.
+- **The duplicate-net change was not the real fix.** Forward driving went from
+  reliably spinning to six consecutive clean runs immediately after that deploy,
+  yet old and new `MATRIX_PINS` are electrically identical for exactly the
+  commands that changed behaviour. Never settled; see the oddity note above.
+
+### How to re-test
+
+```bash
+python3 scripts/probe_matrix.py \
+  "left fwd=18:17" "right fwd=19:22" "FORWARD=18:17,19:22"
+```
+
+Healthy looks like the two single treads roughly equal and opposite, and
+`FORWARD` near zero. At handoff it reads -154 / +73 / -138.
+
+Then resume calibration from `docs/BASE_CALIBRATION.md` step 3.
+
+### Repo state at handoff
+
+Working but unexercised against a healthy base:
+
+- `scripts/calibrate_base_trials.py` -- IMU-measured trials, open-loop by design;
+  distance is the only manual entry. Non-interactive shells record the heading
+  and leave distance pending for `--fill-distance`.
+- `scripts/run_base_calibration_route.py` -- turns closed-loop, straights hold
+  heading, continuous yaw logged into the route file.
+- `scripts/align_dpvo_scale.py` -- capture latency from IMU-yaw cross-correlation,
+  falling back to commanded-turn markers below 0.35 correlation.
+- `scripts/probe_matrix.py` and `remote_gpio_controller.py gate-pairs` -- the
+  diagnostic used above.
+- `imu_monitor.py --record-level` -- mounting offset captured:
+  pitch +0.99 deg, roll -10.47 deg, saved to `config/local/imu_mount.json`.
+
+The 2026-08-23 base calibration is quarantined as `*.pre-2026-08-27-rewire.bak`,
+so `drive_distance.py`, `drive_straight_compensated.py` and the scale route fail
+loudly rather than fitting against pre-rewire numbers.
+
+149 tests pass; 7 need numpy and run under `envs/dpvo/bin/python`.
