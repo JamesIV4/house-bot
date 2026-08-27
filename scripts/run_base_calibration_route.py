@@ -8,16 +8,30 @@ import json
 import time
 from pathlib import Path
 
+from drive_distance import DEFAULT_SUMMARY, load_calibration
+from drive_primed import TURN_DURATIONS
 from send_motor_command import MOTIONS, send_motion
 
 
+# Every straight leg runs for the same 3.0 s used to fit the tread speeds. The
+# base has a fixed startup cost (measured 2026-08-23), so distance is not
+# proportional to duration; evaluating a leg at the duration the speeds were
+# measured at keeps the expected-distance estimate honest. Legs alternate so the
+# base returns near its start.
+# Legs are (motion, amount, unit). Straight legs use seconds, held at the same
+# 3.0 s the tread speeds were fitted at, because the base has a fixed startup
+# cost and distance is not proportional to duration. Turns are specified in
+# DEGREES and converted with the calibrated pivot rates: hardcoding turn seconds
+# silently produced 225 degree spins after the drivetrain got faster.
 ROUTE = (
-    ("forward", 3.0),
-    ("reverse", 2.2),
-    ("left", 1.5),
-    ("forward", 3.0),
-    ("reverse", 2.2),
-    ("right", 1.5),
+    ("forward", 3.0, "s"),
+    ("reverse", 3.0, "s"),
+    ("left", 90.0, "deg"),
+    ("forward", 3.0, "s"),
+    ("reverse", 3.0, "s"),
+    ("left", 90.0, "deg"),
+    ("forward", 3.0, "s"),
+    ("reverse", 3.0, "s"),
 )
 
 
@@ -29,6 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--power", type=float, default=1.0)
     parser.add_argument("--experimental-pulse-density", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--summary", type=Path, default=DEFAULT_SUMMARY)
     parser.add_argument("--execute", action="store_true")
     return parser.parse_args()
 
@@ -61,13 +76,38 @@ def main() -> int:
     }
     result = 0
     try:
-        for index, (motion, duration) in enumerate(ROUTE):
+        load_calibration(args.summary)  # fail early if the calibration is missing
+        resolved = []
+        for motion, amount, unit in ROUTE:
+            if unit == "deg":
+                key = (motion, int(amount))
+                if key not in TURN_DURATIONS:
+                    raise ValueError(
+                        f"no calibrated duration for {motion} {amount} deg; "
+                        f"calibrated: {sorted(TURN_DURATIONS)}"
+                    )
+                seconds = TURN_DURATIONS[key]
+            else:
+                seconds = float(amount)
+            resolved.append((motion, seconds, amount, unit))
+        record["route_plan"] = [
+            {"motion": m, "amount": a, "unit": u, "duration_s": round(d, 4)}
+            for m, d, a, u in resolved
+        ]
+        first_motion = resolved[0][0]
+        first_left, first_right = MOTIONS[first_motion]
+        print("priming receiver (one packet, then 0.75s)", flush=True)
+        send_motion(args.host, args.port, first_left, first_right, 0.05, 20.0)
+        time.sleep(0.75)
+        record["primed"] = True
+
+        for index, (motion, duration, amount, unit) in enumerate(resolved):
             power = args.power
             left, right = MOTIONS[motion]
             started = time.monotonic()
             print(
                 f"segment={index + 1}/{len(ROUTE)} motion={motion} "
-                f"duration={duration:.2f}s power={power:.2f}",
+                f"amount={amount}{unit} duration={duration:.2f}s power={power:.2f}",
                 flush=True,
             )
             packets, acknowledgements, stop_acknowledged, errors = send_motion(

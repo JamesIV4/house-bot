@@ -50,6 +50,24 @@ MATRIX_MOTIONS = {
     "right": ("left-forward", "right-reverse"),
 }
 
+# Both GPIO soldered to one button, in no particular order. Which of the two is
+# the scan row is an electrical property of the pad the wire landed on, not of
+# its position on the switch, so it is measured rather than assumed. Feed this
+# to `identify-rows` after any rewire and paste the result into MATRIX_PINS.
+CANDIDATE_PAIRS = {
+    "left-forward": (17, 18),
+    "left-reverse": (22, 23),
+    "right-forward": (19, 16),
+    "right-reverse": (26, 20),
+}
+
+# A row is driven low for roughly 215 us every 40 ms; see
+# docs/experiments/2026-08-19-gt004-remote-control.md. A column sits at a
+# steady level until a button bridges it to a row.
+ROW_LOW_WIDTH_US = (100.0, 500.0)
+ROW_PERIOD_US = (30_000.0, 55_000.0)
+NOMINAL_SCAN_PERIOD_S = 0.040
+
 
 def bounded_duration(value: str) -> float:
     duration = float(value)
@@ -230,6 +248,81 @@ def format_timing(name: str, values: Sequence[float]) -> str:
     )
 
 
+def classify_scan_pin(
+    low_widths_us: Sequence[float],
+    periods_us: Sequence[float],
+    seconds: float,
+) -> tuple[str, str]:
+    """Decide whether a profiled pin is a scan row, a column, or unreadable.
+
+    Kept free of GPIO so the decision rule is unit-tested rather than only
+    observed on the bench.
+    """
+    if not periods_us:
+        return "column", "no periodic scan windows; steady level"
+    expected = seconds / NOMINAL_SCAN_PERIOD_S
+    observed = len(periods_us) + 1
+    median_width = statistics.median(low_widths_us) if low_widths_us else 0.0
+    median_period = statistics.median(periods_us)
+    detail = (
+        f"{observed} windows in {seconds:.1f}s, "
+        f"median width {median_width:.1f}us, median period {median_period / 1000.0:.2f}ms"
+    )
+    if observed < expected * 0.5:
+        return "column", f"only intermittent activity: {detail}"
+    if not ROW_LOW_WIDTH_US[0] <= median_width <= ROW_LOW_WIDTH_US[1]:
+        return "unclear", f"low width outside the scan range: {detail}"
+    if not ROW_PERIOD_US[0] <= median_period <= ROW_PERIOD_US[1]:
+        return "unclear", f"period outside the scan range: {detail}"
+    return "row", detail
+
+
+def identify_matrix_rows(
+    pairs: dict[str, tuple[int, int]],
+    seconds: float,
+    profile_fn: Callable[[int, float], tuple[list[float], list[float]]] = profile_scan_pin,
+) -> tuple[dict[str, tuple[int, int]], list[str]]:
+    """Profile both GPIO of every pair and order each as (row, column)."""
+    resolved: dict[str, tuple[int, int]] = {}
+    report: list[str] = []
+    for name, (first, second) in pairs.items():
+        verdicts: dict[int, tuple[str, str]] = {}
+        for pin in (first, second):
+            low_widths_us, periods_us = profile_fn(pin, seconds)
+            verdict, detail = classify_scan_pin(low_widths_us, periods_us, seconds)
+            verdicts[pin] = (verdict, detail)
+            report.append(f"{name}: BCM{pin} -> {verdict} ({detail})")
+        rows = [pin for pin, (verdict, _) in verdicts.items() if verdict == "row"]
+        if len(rows) == 1:
+            row_pin = rows[0]
+            column_pin = second if row_pin == first else first
+            resolved[name] = (row_pin, column_pin)
+        elif not rows:
+            report.append(
+                f"{name}: UNRESOLVED, neither BCM{first} nor BCM{second} is scanning. "
+                "Check the remote's AAA cells and that both wires reach opposite "
+                "electrical edges of the same switch."
+            )
+        else:
+            report.append(
+                f"{name}: UNRESOLVED, BCM{first} and BCM{second} both scan. "
+                "The two wires are probably on the same electrical edge."
+            )
+    return resolved, report
+
+
+def format_matrix_pins(resolved: dict[str, tuple[int, int]]) -> str:
+    lines = ["MATRIX_PINS = {"]
+    for name in BUTTON_NAMES:
+        if name in resolved:
+            row_pin, column_pin = resolved[name]
+            lines.append(f'    "{name}": ({row_pin}, {column_pin}),')
+        else:
+            lines.append(f'    "{name}": (?, ?),  # UNRESOLVED')
+    lines.append("}")
+    return "\n".join(lines)
+
+
 def apply_matrix_row_level(
     gpio: Any,
     column_pin: int,
@@ -375,6 +468,17 @@ def build_parser() -> argparse.ArgumentParser:
     profile.add_argument("--pin", type=gpio_pin, default=5, metavar="BCM")
     profile.add_argument("--seconds", type=positive_duration, default=3.0)
 
+    identify = commands.add_parser(
+        "identify-rows",
+        help="profile both GPIO of every button pair and print the resolved MATRIX_PINS",
+    )
+    identify.add_argument(
+        "--seconds",
+        type=positive_duration,
+        default=2.0,
+        help="profile window per pin; 2s covers about 50 scan periods",
+    )
+
     matrix_pulse = commands.add_parser(
         "matrix-pulse",
         help="pull a confirmed input column low only while one scan row is low",
@@ -433,6 +537,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(format_timing("low width", low_widths_us))
         print(format_timing("falling-edge period", periods_us))
         return 0 if low_widths_us else 2
+
+    if args.command == "identify-rows":
+        pins = sorted({pin for pair in CANDIDATE_PAIRS.values() for pin in pair})
+        if args.dry_run:
+            print(
+                f"DRY RUN identify-rows over BCM{pins} at {args.seconds:.1f}s per pin "
+                f"({len(pins) * args.seconds:.0f}s total)"
+            )
+            return 0
+        print(
+            "Profiling both wires of each button pair. Keep the remote's AAA cells "
+            "in and the receiver/motor unit POWERED OFF; nothing is driven here.",
+            flush=True,
+        )
+        try:
+            resolved, report = identify_matrix_rows(CANDIDATE_PAIRS, args.seconds)
+        except RuntimeError as exc:
+            parser.error(str(exc))
+        for line in report:
+            print(line)
+        print()
+        print(format_matrix_pins(resolved))
+        missing = sorted(set(CANDIDATE_PAIRS) - set(resolved))
+        if missing:
+            print(f"\nUnresolved: {', '.join(missing)}", file=sys.stderr)
+            return 2
+        return 0
 
     if args.command == "matrix-pulse":
         if args.dry_run:

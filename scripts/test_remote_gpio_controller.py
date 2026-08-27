@@ -162,5 +162,86 @@ class RemoteGpioControllerTests(unittest.TestCase):
             remote.validate_matrix_actions(("right-forward", "right-reverse"))
 
 
+
+def scan_trace(
+    seconds: float,
+    width_us: float = 215.0,
+    period_us: float = 40_130.0,
+) -> tuple[list[float], list[float]]:
+    """A row's measured signature: a narrow low window once per scan period."""
+    count = int(seconds / (period_us / 1_000_000.0))
+    return [width_us] * count, [period_us] * (count - 1)
+
+
+class ScanClassifierTests(unittest.TestCase):
+    def test_a_measured_row_signature_is_called_a_row(self) -> None:
+        low_widths, periods = scan_trace(2.0)
+        verdict, detail = remote.classify_scan_pin(low_widths, periods, 2.0)
+        self.assertEqual(verdict, "row")
+        self.assertIn("median period 40.13ms", detail)
+
+    def test_a_steady_pin_is_called_a_column(self) -> None:
+        verdict, detail = remote.classify_scan_pin([], [], 2.0)
+        self.assertEqual(verdict, "column")
+        self.assertIn("steady", detail)
+
+    def test_a_few_stray_edges_do_not_make_a_row(self) -> None:
+        verdict, _detail = remote.classify_scan_pin([215.0] * 3, [40_130.0] * 2, 2.0)
+        self.assertEqual(verdict, "column")
+
+    def test_a_wrong_period_is_flagged_rather_than_guessed(self) -> None:
+        low_widths, periods = scan_trace(2.0, period_us=5_000.0)
+        verdict, _detail = remote.classify_scan_pin(low_widths, periods, 2.0)
+        self.assertEqual(verdict, "unclear")
+
+    def test_a_wide_low_window_is_flagged_rather_than_guessed(self) -> None:
+        low_widths, periods = scan_trace(2.0, width_us=9_000.0)
+        verdict, _detail = remote.classify_scan_pin(low_widths, periods, 2.0)
+        self.assertEqual(verdict, "unclear")
+
+
+class IdentifyRowsTests(unittest.TestCase):
+    def fake_profiler(self, rows: set[int]):
+        def profile(pin: int, seconds: float) -> tuple[list[float], list[float]]:
+            return scan_trace(seconds) if pin in rows else ([], [])
+
+        return profile
+
+    def test_each_pair_is_ordered_row_then_column(self) -> None:
+        pairs = {"left-forward": (17, 18), "right-reverse": (26, 20)}
+        resolved, _report = remote.identify_matrix_rows(
+            pairs, 2.0, self.fake_profiler({18, 26})
+        )
+        self.assertEqual(resolved["left-forward"], (18, 17))
+        self.assertEqual(resolved["right-reverse"], (26, 20))
+
+    def test_a_pair_with_no_scanning_wire_is_left_unresolved(self) -> None:
+        resolved, report = remote.identify_matrix_rows(
+            {"left-forward": (17, 18)}, 2.0, self.fake_profiler(set())
+        )
+        self.assertNotIn("left-forward", resolved)
+        self.assertTrue(any("neither" in line for line in report))
+
+    def test_two_wires_on_one_edge_are_reported_not_guessed(self) -> None:
+        resolved, report = remote.identify_matrix_rows(
+            {"left-forward": (17, 18)}, 2.0, self.fake_profiler({17, 18})
+        )
+        self.assertNotIn("left-forward", resolved)
+        self.assertTrue(any("both scan" in line for line in report))
+
+    def test_the_printed_map_marks_what_was_not_resolved(self) -> None:
+        rendered = remote.format_matrix_pins({"left-forward": (18, 17)})
+        self.assertIn('"left-forward": (18, 17),', rendered)
+        self.assertIn("UNRESOLVED", rendered)
+
+    def test_candidate_pairs_avoid_the_imu_and_reserved_buses(self) -> None:
+        pins = sorted({pin for pair in remote.CANDIDATE_PAIRS.values() for pin in pair})
+        self.assertEqual(len(pins), 8)
+        # BCM2/3 carry the MPU-6050; 14/15 the serial console; 9/10/11 SPI0;
+        # 12/13 both hardware PWM channels; 0/1 the HAT ID EEPROM.
+        for reserved in (0, 1, 2, 3, 9, 10, 11, 12, 13, 14, 15):
+            self.assertNotIn(reserved, pins)
+
+
 if __name__ == "__main__":
     unittest.main()

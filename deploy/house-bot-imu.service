@@ -1,0 +1,14 @@
+[Unit]
+Description=House Bot MPU-6050 yaw service
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/james
+ExecStart=/usr/bin/python3 /home/james/imu_service.py --bind 0.0.0.0 --port 8766 --publish-rate 100
+Restart=on-failure
+RestartSec=2
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=default.target

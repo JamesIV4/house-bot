@@ -20,6 +20,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--measurements", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
+        "--time-offset",
+        type=float,
+        help="seconds the trajectory lags the commands; estimated from the "
+             "commanded turns when omitted",
+    )
+    parser.add_argument(
         "--accept-observed-motion",
         action="store_true",
         help="confirm an observer saw both treads engage throughout the route",
@@ -34,6 +40,55 @@ def load_tum(path: Path) -> np.ndarray:
     if values.shape[1] != 8:
         raise ValueError("TUM trajectory must contain timestamp plus seven pose values")
     return values
+
+
+
+def rotation_rate(trajectory: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Angular speed (deg/s) between consecutive poses, with midpoint times."""
+    quats = trajectory[:, 4:8]
+    dots = np.abs(np.sum(quats[:-1] * quats[1:], axis=1)).clip(max=1.0)
+    degrees = np.degrees(2.0 * np.arccos(dots))
+    times = trajectory[:, 0]
+    intervals = np.diff(times).clip(min=1e-6)
+    midpoints = (times[:-1] + times[1:]) / 2.0
+    return midpoints, degrees / intervals
+
+
+def estimate_time_offset(
+    trajectory: np.ndarray,
+    route: dict,
+    first_source_time: float,
+    first_arrival: float,
+    search_s: float = 3.0,
+) -> float | None:
+    """Recover the capture pipeline's latency using commanded turns as markers.
+
+    Camera, network, decode, and tracking latency delay every pose relative to
+    the command that caused it, so mapping command times directly onto pose
+    times samples the wrong slice of trajectory. Rotation is observable in
+    monocular SLAM even though scale is not, which makes the commanded pivots
+    reliable synchronisation events: find each pivot's rotation burst and take
+    the median displacement.
+    """
+    midpoints, rates = rotation_rate(trajectory)
+    offsets = []
+    for segment in route["segments"]:
+        if segment["motion"] not in ("left", "right"):
+            continue
+        centre = first_source_time + (
+            (float(segment["command_started_monotonic_s"])
+             + float(segment["command_ended_monotonic_s"])) / 2.0
+            - first_arrival
+        )
+        window = np.abs(midpoints - centre) <= search_s
+        if not window.any():
+            continue
+        candidates = np.where(window)[0]
+        peak = candidates[int(np.argmax(rates[candidates]))]
+        offsets.append(float(midpoints[peak]) - centre)
+    if not offsets:
+        return None
+    return float(statistics.median(offsets))
 
 
 def nearest_index(timestamps: np.ndarray, target: float) -> int:
@@ -70,6 +125,20 @@ def main() -> int:
     first_source_time = float(transport["first_source_sequence"]) / float(
         transport["source_fps_assumption"]
     )
+
+    if args.time_offset is not None:
+        time_offset = args.time_offset
+        print(f"Using supplied time offset: {time_offset:+.3f}s")
+    else:
+        estimated = estimate_time_offset(trajectory, route, first_source_time, first_arrival)
+        if estimated is None:
+            raise RuntimeError(
+                "Could not estimate capture latency: the route has no turn segments "
+                "to synchronise against. Supply --time-offset."
+            )
+        time_offset = estimated
+        print(f"Estimated capture latency from commanded turns: {time_offset:+.3f}s")
+    first_source_time += time_offset
 
     samples = []
     trajectory_start = float(trajectory[0, 0])

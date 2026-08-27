@@ -66,6 +66,50 @@ they exist.
   stays binary full-power/stop, and motion is commanded as timed full-power
   segments using the calibrated speeds above.
 
+### Receiver wake-up discovered; turns calibrated
+
+- Turn results were erratic in a way command duration could not explain: 1.30 s
+  produced less rotation than 1.27 s, and 0.622 s sometimes produced none at
+  all. Fitting models to this repeatedly failed.
+- Root cause: the receiver ignores the opening of a command while it wakes, and
+  drops a variable amount each time. Sending one throwaway packet, waiting, then
+  issuing the real command removes it. The same 1.27 s left turn went from about
+  180 deg unprimed to 300 deg primed.
+- `scripts/drive_primed.py` implements this. A single 0.05 s packet is used: a
+  3-packet prime moved the base whenever the receiver happened to be awake
+  already, adding its own variable rotation.
+- Measured the wake window with `scripts/test_wake_timeout.py`. An unprimed
+  command after 5 s idle ran at full strength; after 10 s it produced 60 deg
+  where 90 deg was expected. So the receiver stays awake roughly 5 s. Priming is
+  only needed after a longer gap, and during a route with about 1 s between
+  segments one prime at the start is enough.
+- Calibrated turns, walked in physically rather than derived:
+
+  | Turn | Duration |
+  | --- | --- |
+  | left 90 deg | 0.53 s |
+  | left 180 deg | 1.15 s |
+  | right 90 deg | 0.49 s |
+  | right 180 deg | 1.14 s |
+
+- Left and right agree to within 0.01 s, matching the symmetric front-drive
+  rebuild. The 450/390 deg left/right split measured on 2026-08-20 was a wake
+  artefact rather than a drivetrain imbalance.
+- 360 deg was not calibrated; it is not needed and the scatter over a run that
+  long exceeded the adjustments being made.
+
+### Reinterpreted
+
+- The "intermittent right tread" observed repeatedly today is at least partly
+  this wake behaviour. If the receiver wakes its channels unevenly, one tread
+  starts late, which looks exactly like a dropout and pulls the base off
+  heading. That reading fits the symptoms clustering at the starts of runs.
+  A loose gear was genuinely found and fixed on 2026-08-22, so both effects have
+  been present; how much of today belongs to each is not established.
+- Measurements taken today before the prime was introduced should be treated as
+  contaminated. That includes the straight-line startup dead time, the turn
+  timings, and the scale route.
+
 ### Invalidated
 
 - `config/local/base_calibration*` describes the previous drivetrain. The fitted

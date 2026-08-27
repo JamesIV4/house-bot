@@ -107,3 +107,51 @@ valid command refreshes stop for 350 ms.
 The physical receiver port letters used by the left and right motors have not
 yet been identified in the repository. Record those port letters here once
 observed; they do not change the verified Pi-to-remote pinout above.
+
+## Proposed remap (2026-08-27) — NOT YET VERIFIED
+
+The remote's button wires were re-soldered on 2026-08-27 and the Pi header
+assignment is being changed at the same time, to free BCM2/BCM3 for the
+MPU-6050 (`docs/IMU_WIRING.md`) and to stop consuming SPI0 and both hardware
+PWM channels for nothing.
+
+**The table above remains authoritative until `identify-rows` has run.**
+`MATRIX_PINS` in `scripts/remote_gpio_controller.py` is unchanged for the same
+reason.
+
+Design rules: the IMU owns the top-left corner (pins 1-9 odd); each button's
+two wires land on a facing odd/even pin pair; left tread at the top of the
+header, right tread at the bottom; I2C, the serial console, SPI0, and PWM0/PWM1
+on BCM12/BCM13 all stay free.
+
+| Robot action | Wire | Pi physical pin | BCM |
+| --- | --- | ---: | ---: |
+| Common ground | green | 14 | GND |
+| Left forward | blue | 11 | 17 |
+| Left forward | brown | 12 | 18 |
+| Left reverse | yellow | 15 | 22 |
+| Left reverse | black | 16 | 23 |
+| Right forward | red | 35 | 19 |
+| Right forward | orange | 36 | 16 |
+| Right reverse | white | 37 | 26 |
+| Right reverse | purple | 38 | 20 |
+
+Which wire of each pair is the scan **row** and which is the **column** is an
+electrical property of the pad the wire landed on, not of its position on the
+switch, and the left and right button clusters are mirrored on this PCB. It is
+therefore measured, not assumed:
+
+```bash
+# Receiver/motor unit POWERED OFF; remote AAA cells in. Nothing is driven.
+python3 ~/remote_gpio_controller.py identify-rows --seconds 2
+```
+
+Each pin is profiled for 2 s. A row shows a roughly 215 us low window every
+40 ms; a column sits steady. The command prints a ready-to-paste `MATRIX_PINS`
+and names any pair it could not resolve. A pair where neither wire scans means
+dead remote cells or two wires on the same electrical edge; a pair where both
+scan means two wires on the same edge.
+
+After it resolves cleanly, paste the printed map into `MATRIX_PINS`, update the
+authoritative table above, update `test_remote_gpio_controller.py`, redeploy,
+and re-verify one direction at a time before any paired motion.
