@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from send_motor_command import MOTIONS, encode_command
+from turn_by_imu import DEFAULT_IMU_PORT, ImuClient, ImuError
 
 
 MAX_SEGMENT_SECONDS = 10.0
@@ -159,6 +160,7 @@ def run_route(
     sock: socket.socket | None = None,
     now_fn=time.monotonic,
     sleep_fn=time.sleep,
+    on_tick=None,
 ) -> list[LegResult]:
     """Stream the whole route from one socket and one session."""
     owns_socket = sock is None
@@ -208,6 +210,8 @@ def run_route(
             pending[sequence] = result
             sequence += 1
             drain()
+            if on_tick is not None:
+                on_tick()
             # Schedule against the route clock, not against sleep duration, so
             # per-tick overhead cannot accumulate into drift across a long route.
             #
@@ -270,6 +274,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="print the timeline and exit")
     parser.add_argument("--execute", action="store_true", help="required to actually move")
     parser.add_argument("--log", type=Path, help="write a route log for scale alignment")
+    parser.add_argument("--imu-log", action="store_true",
+                        help="record IMU yaw into the route log; scale alignment needs it")
+    parser.add_argument("--imu-port", type=int, default=DEFAULT_IMU_PORT)
     return parser
 
 
@@ -298,10 +305,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("\nRefusing to move without --execute", file=sys.stderr)
         return 2
 
+    imu = None
+    if args.imu_log:
+        imu = ImuClient(args.host, args.imu_port, record_history=True)
+        try:
+            imu.wait_for_stream()
+            print("calibrating gyro bias; keep the base still...")
+            imu.calibrate(2.0)
+            imu.zero()
+        except ImuError as exc:
+            print(f"IMU unavailable: {exc}", file=sys.stderr)
+            imu.close()
+            return 2
+
     print()
     started_unix = time.time()
     started_monotonic = time.monotonic()
-    results = run_route(legs, args.host, args.port, args.rate)
+    try:
+        results = run_route(
+            legs, args.host, args.port, args.rate,
+            on_tick=(imu.pump if imu is not None else None),
+        )
+    finally:
+        yaw_log = None
+        if imu is not None:
+            yaw_log = [
+                [round(stamp, 6), round(yaw, 4), round(rate, 3)]
+                for stamp, yaw, rate in imu.history
+            ]
+            imu.close()
 
     failures = 0
     for result in results:
@@ -319,11 +351,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.log:
         args.log.parent.mkdir(parents=True, exist_ok=True)
-        args.log.write_text(json.dumps({
-            "schema_version": 3,
+        # schema_version 2 is what align_dpvo_scale.py gates on; it is a
+        # contract version, not a file revision, so it stays 2 here.
+        document = {
+            "schema_version": 2,
             "driver": "drive_route.py",
             "actuation_command_model": "binary_full_power",
             "physical_motion_observation": "unconfirmed",
+            "result": 2 if failures else 0,
             "host": args.host,
             "port": args.port,
             "rate_hz": args.rate,
@@ -331,7 +366,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             "route_started_monotonic_s": started_monotonic,
             "segments": [
                 {
-                    "label": r.leg.label,
+                    "motion": r.leg.label,
+                    "power": 1.0,
+                    "duration_s": round(r.leg.duration_s, 4),
                     "left": r.leg.left,
                     "right": r.leg.right,
                     "command_started_monotonic_s": started_monotonic + r.leg.start_s,
@@ -341,7 +378,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
                 for r in results
             ],
-        }, indent=2) + "\n")
+        }
+        if yaw_log is not None:
+            document["yaw_log"] = yaw_log
+            document["yaw_samples"] = len(yaw_log)
+        args.log.write_text(json.dumps(document, indent=2) + "\n")
         print(f"\nroute log -> {args.log}")
 
     return 2 if failures else 0

@@ -12,6 +12,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PI_HOST="${1:-192.168.0.241}"
 MAX_POSES="${2:-600}"
+# Anything after the first two arguments is forwarded to the route driver.
+ROUTE_ARGS=("${@:3}")
+SCALE_ROUTE_FILE="${SCALE_ROUTE_FILE:-$ROOT_DIR/config/scale-route.json}"
+SCALE_ROUTE_GAP="${SCALE_ROUTE_GAP:-2.5}"
 OUTPUT_DIR="$ROOT_DIR/data/output/dpvo-pi-live"
 ROUTE_DIR="$ROOT_DIR/data/output/scale-routes"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -59,8 +63,17 @@ fi
 
 echo "=== driving the scale route ==="
 echo "Watch both treads for the whole route; a dropout invalidates the scale fit."
-python3 "$ROOT_DIR/scripts/run_base_calibration_route.py" \
-    --host "$PI_HOST" --output "$ROUTE_LOG" --power 1.0 --execute
+# Driven by drive_route.py: one process, one socket, one session, and an
+# uninterrupted command stream with gaps sent as explicit zeros. The previous
+# driver held heading by dropping command slots on one tread at 20 Hz, and every
+# dropped slot is a set_wheels transition that makes the Pi reclaim a GPIO line
+# instead of catching a 215 us scan window. Scale alignment needs each straight
+# leg to be *timestamped*, not straight, so open-loop constant-power legs are
+# both safer and sufficient.
+python3 "$ROOT_DIR/scripts/drive_route.py" \
+    --host "$PI_HOST" --route-file "$SCALE_ROUTE_FILE" --log "$ROUTE_LOG" \
+    --gap "$SCALE_ROUTE_GAP" --imu-log --execute \
+    "${ROUTE_ARGS[@]}"
 ROUTE_RESULT=$?
 
 echo "=== waiting for DPV-SLAM to finish writing ==="
