@@ -9,6 +9,7 @@ import math
 import signal
 import socket
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -109,7 +110,11 @@ class MatrixMotorRuntime:
         for pin in self.all_pins:
             self.gpio.setup(pin, self.gpio.IN, pull_up_down=self.gpio.PUD_OFF)
         self.actions: tuple[str, ...] = ()
-        self.sink_active = {name: False for name in MATRIX_PINS}
+        # Keyed by COLUMN PIN, not by action. A pivot's two actions share one
+        # physical pin (left = BCM22 twice, right = BCM17 twice), so two
+        # independent flags let the second action release a press the first
+        # had just asserted, microseconds earlier in the same poll pass.
+        self.sink_active = {pin: False for pin in self.column_pins}
         self.row_was_low = {name: False for name in MATRIX_PINS}
         self.window_enabled = {name: False for name in MATRIX_PINS}
         self.duty_accumulator = {name: 0.0 for name in MATRIX_PINS}
@@ -136,7 +141,7 @@ class MatrixMotorRuntime:
             # so steering one tread down slowed the other one more, and the
             # correction drove the base further off course instead of back.
             for name in set(self.actions) - set(new_actions):
-                self.release_action(name)
+                self.release_action(name, keep=new_actions)
                 self.row_was_low[name] = False
                 self.window_enabled[name] = False
                 self.duty_accumulator[name] = 0.0
@@ -158,6 +163,10 @@ class MatrixMotorRuntime:
         return self.actions
 
     def poll(self) -> None:
+        # Resolve what every column wants FIRST, then drive each pin once. A
+        # column is held low if any active action sharing it wants it low, so
+        # the two halves of a pivot cooperate instead of cancelling each other.
+        wanted: dict[int, bool] = {pin: False for pin in self.column_pins}
         for name in self.actions:
             row_pin, column_pin = MATRIX_PINS[name]
             row_low = int(self.gpio.input(row_pin)) == 0
@@ -168,27 +177,36 @@ class MatrixMotorRuntime:
                 self.duty_accumulator[name] = (
                     accumulator - 1.0 if self.window_enabled[name] else accumulator
                 )
-            self.sink_active[name] = apply_matrix_row_level(
-                self.gpio,
-                column_pin,
-                row_low and self.window_enabled[name],
-                self.sink_active[name],
-            )
             self.row_was_low[name] = row_low
             if not row_low:
                 self.window_enabled[name] = False
+            if row_low and self.window_enabled[name]:
+                wanted[column_pin] = True
+        for column_pin, want_low in wanted.items():
+            self.sink_active[column_pin] = apply_matrix_row_level(
+                self.gpio,
+                column_pin,
+                want_low,
+                self.sink_active[column_pin],
+            )
 
-    def release_action(self, name: str) -> None:
-        """Return one action's column to a high-impedance input."""
+    def release_action(self, name: str, keep: Sequence[str] = ()) -> None:
+        """Return one action's column to a high-impedance input.
+
+        A column shared with an action that is still commanded must stay under
+        that action's control, or dropping one half of a pivot would release the
+        other half's press too.
+        """
         _row_pin, column_pin = MATRIX_PINS[name]
+        if any(MATRIX_PINS[other][1] == column_pin for other in keep):
+            return
         self.gpio.setup(column_pin, self.gpio.IN, pull_up_down=self.gpio.PUD_OFF)
-        self.sink_active[name] = False
+        self.sink_active[column_pin] = False
 
     def release_columns(self) -> None:
         for pin in self.column_pins:
             self.gpio.setup(pin, self.gpio.IN, pull_up_down=self.gpio.PUD_OFF)
-        for name in self.sink_active:
-            self.sink_active[name] = False
+            self.sink_active[pin] = False
 
     def close(self) -> None:
         self.actions = ()

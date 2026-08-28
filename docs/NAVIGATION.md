@@ -90,10 +90,11 @@ The base consumes `geometry_msgs/msg/Twist` on `/cmd_vel`. Current provisional
 limits are 0.25 m/s linear speed and 0.8 rad/s angular speed. Robot radius is
 provisionally 0.16 m; both values must be measured against the assembled base.
 
-The current costmaps use the static occupancy map only. A depth-derived or
-range-derived obstacle topic is the next perception input after metric scale
-exists; it can be added as a Nav2 obstacle layer without changing the UI or
-goal API.
+The current costmaps use the static occupancy map only. A **SLAM-derived**
+obstacle topic is the next perception input after metric scale exists; it can be
+added as a Nav2 obstacle layer without changing the UI or goal API. It will come
+from dense pointmaps, not from a range sensor -- the camera and IMU are the
+complete sensor set (D-021), so nothing here waits on new hardware.
 
 The real bridge starts disabled. `/house_bot/base/enable` arms or disarms it,
 `/house_bot/estop` latches an emergency stop, and

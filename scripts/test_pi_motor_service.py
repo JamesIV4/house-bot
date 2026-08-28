@@ -181,7 +181,71 @@ class PiMotorServiceTests(unittest.TestCase):
             gpio.setup_calls,
         )
         self.assertEqual(runtime.duty_accumulator["left-forward"], 0.0)
-        self.assertFalse(runtime.sink_active["left-forward"])
+        self.assertFalse(runtime.sink_active[left_column])
+
+    def test_a_pivots_two_actions_share_one_column_without_cancelling(self) -> None:
+        """Regression: a pivot drove both its actions through ONE physical pin.
+
+        left pivot is left-reverse + right-forward, and both use BCM22. With
+        per-action sink state, the second action released the press the first
+        had asserted microseconds earlier in the same poll pass, producing
+        truncated presses. Those put the GT004 remote into a latched state where
+        paired commands drove only one tread, recoverable only by power-cycling
+        it -- reproduced on the remote's own buttons on 2026-08-27.
+        """
+        left_row, left_column = service.MATRIX_PINS["left-reverse"]
+        right_row, right_column = service.MATRIX_PINS["right-forward"]
+        self.assertEqual(left_column, right_column, "pivot must share one column")
+
+        gpio = self.make_gpio()
+        runtime = service.MatrixMotorRuntime(gpio)
+        runtime.set_wheels(-1.0, 1.0)
+        self.assertEqual(set(runtime.actions), {"left-reverse", "right-forward"})
+
+        # Row B low, row D high: the shared column must be driven low and stay
+        # low for the whole pass, not be released again by the other action.
+        gpio.levels[left_row] = 0
+        gpio.levels[right_row] = 1
+        del gpio.setup_calls[:]
+        runtime.poll()
+        self.assertTrue(runtime.sink_active[left_column])
+        self.assertNotIn(
+            (left_column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
+            gpio.setup_calls,
+            "the other half of the pivot released the shared column mid-press",
+        )
+
+        # Now row D's window, row B high: still low, still uncancelled.
+        gpio.levels[left_row] = 1
+        gpio.levels[right_row] = 0
+        del gpio.setup_calls[:]
+        runtime.poll()
+        self.assertTrue(runtime.sink_active[left_column])
+        self.assertNotIn(
+            (left_column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
+            gpio.setup_calls,
+        )
+
+        # Both rows high: released exactly once.
+        gpio.levels[left_row] = 1
+        gpio.levels[right_row] = 1
+        del gpio.setup_calls[:]
+        runtime.poll()
+        self.assertFalse(runtime.sink_active[left_column])
+
+    def test_dropping_half_a_pivot_keeps_the_other_halfs_column(self) -> None:
+        """Releasing one action must not release a column the other still owns."""
+        _row, shared = service.MATRIX_PINS["left-reverse"]
+        gpio = self.make_gpio()
+        runtime = service.MatrixMotorRuntime(gpio)
+        runtime.set_wheels(-1.0, 1.0)
+        del gpio.setup_calls[:]
+        runtime.set_wheels(0.0, 1.0)   # drop left-reverse, keep right-forward
+        self.assertNotIn(
+            (shared, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
+            gpio.setup_calls,
+            "shared column released while right-forward still needs it",
+        )
 
     def test_stopping_releases_every_column(self) -> None:
         gpio = self.make_gpio()

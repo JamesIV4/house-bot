@@ -10,7 +10,10 @@ The current receiver exposes no verified encoder feedback. The first `/odom`
 source is therefore explicitly high-covariance **open-loop command
 integration**. It is suitable for calibration and short supervised motion
 tests. It is not sufficient for unattended navigation. Metric visual
-localization and a live obstacle source remain autonomy gates.
+localization and a live obstacle source remain autonomy gates -- where "obstacle
+source" means a SLAM-derived obstacle topic, not a range sensor. The camera and
+IMU are the complete sensor set; see D-021. There are no wheel encoders and none
+are planned, so visual pose correction is the source of truth for position.
 
 ## Safety setup
 
@@ -115,6 +118,21 @@ nothing reads them silently, and `drive_distance.py`,
 `drive_straight_compensated.py`, and the scale route now fail loudly until the
 calibration is redone. See
 `docs/experiments/2026-08-27-remote-remap-and-imu.md`.
+
+## Driving multi-leg routes
+
+Use `scripts/drive_route.py`, which streams a whole route from one process,
+socket and session:
+
+```bash
+python3 scripts/drive_route.py --dry-run --gap 2.5 forward:3 reverse:3
+python3 scripts/drive_route.py --execute --gap 2.5 forward:3 reverse:3
+```
+
+**Do not loop `send_motor_command.py` once per leg.** Doing so latches the GT004
+remote into a state where paired commands drive only one tread, clearing only on
+a power cycle. See `docs/experiments/2026-08-27-remote-remap-and-imu.md`. A
+single one-off command through `send_motor_command.py` is fine.
 
 ## 5. Solve and review
 

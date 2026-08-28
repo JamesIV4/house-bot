@@ -49,10 +49,26 @@ trap cleanup EXIT INT TERM
   "james@${PI_HOST}:${REMOTE_DIR}/pi_stream_c920.sh" >/dev/null
 "${SSH[@]}" "chmod +x '$REMOTE_DIR/pi_stream_c920.sh'"
 
+# Wait for the listener rather than guessing at it. ffmpeg binds the port about
+# 1.8 s after launch on this Pi, against what used to be a fixed 2 s sleep, so
+# any jitter in SSH round-trip or camera warm-up raced the client into
+# ECONNREFUSED. Polled on the Pi so one SSH round trip covers the whole wait,
+# and because probing the port from here would consume ffmpeg's single accept.
 REMOTE_PID="$("${SSH[@]}" \
-  "nohup env C920_AUTOFOCUS=0 C920_FOCUS_ABSOLUTE=0 '$REMOTE_DIR/pi_stream_c920.sh' /dev/video0 '$PORT' > /tmp/house-bot-camera.log 2>&1 & echo \$!")"
-echo "Started Pi camera stream as PID $REMOTE_PID"
-sleep 2
+  "nohup env C920_AUTOFOCUS=0 C920_FOCUS_ABSOLUTE=0 '$REMOTE_DIR/pi_stream_c920.sh' /dev/video0 '$PORT' > /tmp/house-bot-camera.log 2>&1 & \
+   pid=\$!; \
+   for _ in \$(seq 1 200); do \
+     if ss -ltn 2>/dev/null | grep -q ':$PORT '; then echo \$pid; exit 0; fi; \
+     if ! kill -0 \$pid 2>/dev/null; then echo 'camera stream exited during start-up' >&2; exit 1; fi; \
+     sleep 0.1; \
+   done; \
+   echo 'camera stream did not listen within 20s' >&2; exit 1")"
+
+if [[ -z "$REMOTE_PID" ]]; then
+  echo "Pi camera stream failed to start; see /tmp/house-bot-camera.log on $PI_HOST" >&2
+  exit 1
+fi
+echo "Started Pi camera stream as PID $REMOTE_PID (listening on $PORT)"
 
 export CUDA_HOME="$ENV_PREFIX"
 export PATH="$CUDA_HOME/bin:$PATH"

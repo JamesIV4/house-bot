@@ -20,6 +20,36 @@ Going forward the left tread runs 7.9% faster than the right, which is the
 systematic rightward drift; in reverse the two are within 2.6% and the drift
 nearly vanishes. Now measured and compensated rather than unexplained.
 
+**ROOT CAUSE FOUND: driving a route as one process per leg corrupted the
+remote.** Looping `send_motor_command.py` once per leg put the GT004 into a
+latched state where paired commands drove only one tread, clearing only on a
+power cycle -- and reproducible on the remote's own physical buttons, which is
+what made it look like hardware. `scripts/drive_route.py` drives the identical
+route from **one process, one socket, one session, one continuous 20 Hz
+stream**, and the same route then ran clean with the controls fine afterwards.
+
+Every leg boundary in the old pattern produced a traffic burst: the stop
+confirmation retries at 5 ms intervals for up to 0.6 s, sends two more stops,
+then the process tears down and the next starts with a fresh socket and session.
+The motor service busy-polls GPIO to catch 215 us scan windows and services the
+network only every 500 us, so a burst at every boundary starves the gating loop
+precisely when it is releasing a column. Miss that timing and it actuates
+buttons nobody asked for.
+
+That explains the dose-response seen all day: rapid short legs (many boundaries)
+broke it fastest; the 12 long, widely spaced calibration trials survived; the
+slow-cadence run still broke because the camera added CPU contention on top.
+
+**Rule: drive multi-leg routes with `scripts/drive_route.py`. Never loop
+`send_motor_command.py`.** A single one-off command is fine.
+
+**A separate, real bug was found and fixed on the way** in
+`pi_motor_service.py`: a pivot's two actions share one physical column pin
+(left pivot = BCM22 twice, right = BCM17 twice) but each kept its own
+`sink_active` flag, so the second action released the press the first had
+asserted microseconds earlier in the same poll pass. Sink state is now keyed by
+column pin. Regression-tested. This was **not** the cause of the drive fault.
+
 **The "will not drive straight" fault did not reproduce.** Twelve trials ran
 clean. What was ruled out first, by measurement: the pin map, the deployed code,
 the calibration script's inputs, the column release timing, and the shared-pin
@@ -27,9 +57,10 @@ pivot -- plus an on-blocks pass where all four single actions, both pairs, and
 the UDP service path were correct with the treads unloaded. See "Session 2: the
 Pi side is not the fault" below.
 
-**Watch the right tread.** It carries roughly double the left's run-to-run
-variation in both directions. Small enough to pass, and the leading suspect if
-straight-line driving degrades again.
+**The right tread is NOT the problem.** It carries roughly double the left's
+run-to-run variation in the fit, which is worth watching, but it was wrongly
+promoted to leading suspect before the driver was suspected. So were the motor
+battery pack and a column release race. Do not restart there.
 
 **The remote sleeps after 2-5 minutes idle** and its MCU stops scanning
 entirely. A command sent into a slept remote actuates nothing and reads as

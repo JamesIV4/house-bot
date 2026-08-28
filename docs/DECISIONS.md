@@ -216,3 +216,40 @@
   after the remote was explicitly woken, ruling out receiver timeout as the
   explanation. UDP acknowledgement proves only that the GPIO command was
   received; it does not prove physical tread motion.
+
+## D-021 - Camera and IMU are the complete sensor set
+
+- **Status:** accepted, 2026-08-27
+- **Decision:** the C920 and the MPU-6050 are the only sensors this robot will
+  have. No wheel encoders, no lidar, no depth camera, no ultrasonic or bumper
+  sensors are planned, now or later. Obstacle detection, the persistent
+  multi-room map, and position correction all derive from visual SLAM. The IMU
+  supplies heading and short-horizon motion estimates; SLAM is the source of
+  truth that corrects them.
+- **Reason:** the sensor set is a fixed constraint of this build rather than an
+  open question, and treating it as open has repeatedly produced advice to add
+  hardware instead of building the perception that is actually planned.
+  Recording it here stops that recurring.
+- **Consequence:** "a live obstacle source" as an autonomy gate means *a
+  SLAM-derived obstacle topic*, not a range sensor. Dense pointmaps
+  (MASt3R-SLAM, per D-002 and D-013) are the intended source; DPV-SLAM remains
+  the pose estimate. Nothing in the navigation stack should wait on hardware.
+
+## D-022 - Replace the proportional-control arming gate
+
+- **Status:** accepted, 2026-08-27
+- **Decision:** proportional control is permanently ruled out, so
+  `proportional_control_verified` must not remain the condition that arms the
+  ROS base bridge. Replace it with a gate that can actually be satisfied by
+  binary actuation: verified bang-bang motion primitives with characterised
+  distance and angle quanta, plus a translation layer converting Nav2's
+  continuous `/cmd_vel` into timed full-power pulses.
+- **Reason:** D-020 blocked arming "until proportional two-tread control is
+  independently verified". Under D-021 that verification will never happen, so
+  the gate is now a permanent blocker by design rather than a safety interlock.
+  A gate that cannot be satisfied is not a safety measure, it is a dead end.
+- **Consequence:** path-following precision is bounded by the actuation quanta,
+  not by the planner. Measured floors: about 12 deg for the smallest repeatable
+  stationary turn, and about 33 deg of coast after a full-power pivot. The
+  controller must be designed around those numbers rather than assuming they
+  can be tuned away.
