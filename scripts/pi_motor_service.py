@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import signal
 import socket
 import time
@@ -19,6 +20,26 @@ from remote_gpio_controller import MATRIX_PINS, apply_matrix_row_level
 DEFAULT_PORT = 8765
 DEFAULT_WATCHDOG_SECONDS = 0.35
 NETWORK_POLL_NS = 500_000
+REALTIME_PRIORITY = 10
+
+
+def request_realtime_scheduling(priority: int = REALTIME_PRIORITY) -> str:
+    """Take the gating loop off the fair scheduler.
+
+    The loop has to notice a scan line rise and release a column before the
+    next channel is scanned, about 419 us later. Under SCHED_OTHER it was
+    measured going blind for up to 629 us between polls -- on its own more than
+    the whole budget, and a bigger term than the release itself. Real-time
+    priority is the fix; everything else in this file assumes it succeeded.
+    """
+    try:
+        os.sched_setscheduler(0, os.SCHED_FIFO, os.sched_param(priority))
+    except (AttributeError, OSError, PermissionError) as exc:
+        return (
+            f"WARNING: still on the fair scheduler ({exc}); expect missed "
+            "scan windows. Grant CAP_SYS_NICE to the unit."
+        )
+    return f"scheduler=SCHED_FIFO priority={priority}"
 
 
 @dataclass(frozen=True)
@@ -116,9 +137,6 @@ class MatrixMotorRuntime:
         # had just asserted, microseconds earlier in the same poll pass.
         self.sink_active = {pin: False for pin in self.column_pins}
         self.row_was_low = {name: False for name in MATRIX_PINS}
-        self.window_enabled = {name: False for name in MATRIX_PINS}
-        self.duty_accumulator = {name: 0.0 for name in MATRIX_PINS}
-        self.action_levels = {name: 0.0 for name in MATRIX_PINS}
         self.window_counts = {name: 0 for name in MATRIX_PINS}
 
     def set_wheels(self, left: float, right: float) -> tuple[str, ...]:
@@ -143,68 +161,39 @@ class MatrixMotorRuntime:
             for name in set(self.actions) - set(new_actions):
                 self.release_action(name, keep=new_actions)
                 self.row_was_low[name] = False
-                self.window_enabled[name] = False
-                self.duty_accumulator[name] = 0.0
             self.actions = new_actions
-        levels = {
-            "left-forward": max(left, 0.0),
-            "left-reverse": max(-left, 0.0),
-            "right-forward": max(right, 0.0),
-            "right-reverse": max(-right, 0.0),
-        }
-        for name, level in levels.items():
-            previous = self.action_levels[name]
-            self.action_levels[name] = level
-            if name in new_actions and previous <= 0.05 < level:
-                # Make the first requested scan window active. Subsequent
-                # windows use an error accumulator, producing an even pulse
-                # density without resetting phase on every network refresh.
-                self.duty_accumulator[name] = 1.0 - level
         return self.actions
 
     def poll(self) -> None:
-        # Resolve what every column wants FIRST, then drive each pin once. A
-        # column is held low if any active action sharing it wants it low, so
-        # the two halves of a pivot cooperate instead of cancelling each other.
+        """Mirror each commanded action's scan window onto its column.
+
+        Actuation is binary: while a channel's scan line is low, its column is
+        low. There is no duty cycling -- fractional wheel magnitudes are
+        rejected at the door, so the accumulator this used to carry only added
+        work to the hottest loop in the system.
+        """
         wanted: dict[int, bool] = {pin: False for pin in self.column_pins}
         for name in self.actions:
             row_pin, column_pin = MATRIX_PINS[name]
             row_low = int(self.gpio.input(row_pin)) == 0
-            if row_low and not self.row_was_low[name]:
-                self.window_counts[name] += 1
-                accumulator = self.duty_accumulator[name] + self.action_levels[name]
-                self.window_enabled[name] = accumulator >= 1.0 - 1e-9
-                self.duty_accumulator[name] = (
-                    accumulator - 1.0 if self.window_enabled[name] else accumulator
-                )
-            self.row_was_low[name] = row_low
-            if not row_low:
-                self.window_enabled[name] = False
-            if row_low and self.window_enabled[name]:
+            if row_low:
+                if not self.row_was_low[name]:
+                    self.window_counts[name] += 1
                 wanted[column_pin] = True
-        # Two passes: release every column that must go high BEFORE asserting
-        # any that must go low. A single pass applied them in pin order, so
-        # whether a frame was safe depended on how the pin numbers happened to
-        # sort. On the 2026-08-30 harness `reverse` sorted the wrong way: BCM17
-        # went low while BCM20 was still low, and the remote saw both
-        # directions of one channel pressed at once for the length of a
-        # setup() call -- 51 us median, 226 us max against a 225 us scan
-        # window, 25 times a second for the whole leg.
+            self.row_was_low[name] = row_low
+
+        # Release before assert, always. Applying in pin order let both columns
+        # sit low inside one scan window, which reads as both directions of a
+        # channel pressed at once.
         for column_pin, want_low in wanted.items():
             if not want_low:
                 self.sink_active[column_pin] = apply_matrix_row_level(
-                    self.gpio,
-                    column_pin,
-                    False,
-                    self.sink_active[column_pin],
+                    self.gpio, column_pin, False, self.sink_active[column_pin]
                 )
         for column_pin, want_low in wanted.items():
             if want_low:
                 self.sink_active[column_pin] = apply_matrix_row_level(
-                    self.gpio,
-                    column_pin,
-                    True,
-                    self.sink_active[column_pin],
+                    self.gpio, column_pin, True, self.sink_active[column_pin]
                 )
 
     def release_action(self, name: str, keep: Sequence[str] = ()) -> None:
@@ -257,7 +246,6 @@ def run_server(
     invert_left: bool = False,
     invert_right: bool = False,
     swap_sides: bool = False,
-    allow_experimental_pulse_density: bool = False,
 ) -> int:
     runtime = MatrixMotorRuntime(
         invert_left=invert_left,
@@ -279,12 +267,12 @@ def run_server(
 
     signal.signal(signal.SIGINT, request_stop)
     signal.signal(signal.SIGTERM, request_stop)
+    print(request_realtime_scheduling(), flush=True)
     print(
         f"House Bot motor service listening on {bind}:{port}; "
         f"watchdog={watchdog_seconds:.3f}s "
         f"invert_left={invert_left} invert_right={invert_right} "
-        f"swap_sides={swap_sides} "
-        f"command_mode={'experimental-pulse-density' if allow_experimental_pulse_density else 'binary-only'}",
+        f"swap_sides={swap_sides} command_mode=binary-only",
         flush=True,
     )
 
@@ -305,8 +293,7 @@ def run_server(
                     command: WheelCommand | None = None
                     try:
                         command = parse_command(payload)
-                        if not allow_experimental_pulse_density:
-                            require_binary_wheels(command)
+                        require_binary_wheels(command)
                         previous = client_sequences.get(address)
                         stale = (
                             previous is not None
@@ -349,11 +336,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--invert-left", action="store_true")
     parser.add_argument("--invert-right", action="store_true")
     parser.add_argument("--swap-sides", action="store_true")
-    parser.add_argument(
-        "--allow-experimental-pulse-density",
-        action="store_true",
-        help="accept fractional wheel magnitudes; unsafe until both treads are verified",
-    )
     return parser
 
 
@@ -370,7 +352,6 @@ def main() -> int:
         args.invert_left,
         args.invert_right,
         args.swap_sides,
-        args.allow_experimental_pulse_density,
     )
 
 

@@ -6,6 +6,14 @@ After=network-online.target
 Type=simple
 WorkingDirectory=/home/james
 ExecStart=/usr/bin/python3 /home/james/pi_motor_service.py --bind 0.0.0.0 --port 8765 --watchdog 0.35
+# The gating loop must release a column before the next channel is scanned,
+# about 419 us later. On the fair scheduler it was measured going blind for up
+# to 629 us between polls, more than the whole budget on its own, so it asks
+# for SCHED_FIFO at startup and logs a warning if it is refused.
+#
+# A *user* unit cannot grant AmbientCapabilities (systemd exits 218) and the
+# user's rtprio hard limit is 0, so the permission comes from
+# /etc/security/limits.d/99-housebot-rtprio.conf instead.
 Restart=on-failure
 RestartSec=1
 KillSignal=SIGTERM

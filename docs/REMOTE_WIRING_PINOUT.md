@@ -172,9 +172,26 @@ BCM12/13 under live service load, 40,000 cycles and 583,000 loop passes:
 | `setup(IN)` — release | 50.9 us | 146.4 us | 225.9 us |
 | loop blind time between passes | 33.6 us | 59.9 us | 628.8 us |
 
-The service is `SCHED_OTHER` at nice 0 and took **20,574 involuntary
-preemptions in 44 minutes**. There is no upper bound on how long a column stays
-low; there is only a distribution, and its tail exceeds any slot spacing here.
+The service *was* `SCHED_OTHER` at nice 0, taking **20,574 involuntary
+preemptions in 44 minutes** -- the loop's own blind time, not the release cost,
+was the dominant term against the 419 us budget.
+
+**Fixed 2026-08-30: the service now runs `SCHED_FIFO` priority 10**, and takes
+about **2 involuntary preemptions per restart** instead. It requests this
+itself at startup and logs a warning if refused.
+
+The permission cannot come from the unit file: a *user* unit cannot set
+`AmbientCapabilities` (systemd exits `218/CAPABILITIES`) and the user's rtprio
+hard limit is 0, so `LimitRTPRIO=` cannot raise it either. It comes from a
+root-owned file instead:
+
+```bash
+echo 'james - rtprio 20' | sudo tee /etc/security/limits.d/99-housebot-rtprio.conf
+sudo systemctl restart user@1000
+```
+
+Confirm with `ps -o cls,rtprio -p $(systemctl --user show house-bot-motors.service -p MainPID --value)`;
+healthy is `FF 10`, not `TS -`.
 
 > **Method note.** An earlier measurement — "0 ghost presses in 49 windows" —
 > was used to close this question. At roughly 1 late release in 10^4 windows,
@@ -186,9 +203,16 @@ low; there is only a distribution, and its tail exceeds any slot spacing here.
 `RPi.GPIO` on this Pi is the `rpi-lgpio` shim, so `setup()` is a kernel line
 free-and-reclaim rather than a register write, and lines are claimed
 exclusively — the motor service must be stopped before any manual GPIO work.
-`lgpio.gpio_claim_output(h, lgpio.SET_OPEN_DRAIN, pin, 0)` plus `gpio_write`
-toggles in 6.5 us without reclaiming and never drives the pin high; it remains
-an available optimisation.
+> **The open-drain optimisation does not work on this kernel** (6.18.34,
+> lgpio 0.2.2), contrary to the note carried in this file since 2026-08-27.
+> Tested 2026-08-30: `gpio_claim_output` with an initial level of **1 is
+> rejected outright** (`xGpioHandleRequest: Invalid argument`); with level 0 it
+> claims, and `gpio_write` is genuinely fast at 6.1 us, but **writing 1 never
+> releases the line to high impedance** -- verified electrically by reading the
+> duplicate wire on the same net, which stayed low through release/press/release.
+> Worse, `gpio_free` does not restore the pin: it was left driving low. Do not
+> retry this without a scope. The release cost stays at `setup()`'s 51 us
+> median / 226 us max.
 
 ## Re-identifying after a rewire
 

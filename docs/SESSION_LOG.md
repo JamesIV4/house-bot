@@ -3,6 +3,62 @@
 Keep entries concise and evidence based. Link detailed experiment records when
 they exist.
 
+## 2026-08-30 (later) - Real-time scheduling; dead duty-cycle code removed
+
+### Changed
+
+- **The motor service now runs `SCHED_FIFO` priority 10.** Its blind time
+  between polls, not the release cost, was the dominant term against the 419 us
+  budget: 629 us worst case on the fair scheduler, with 20 574 involuntary
+  preemptions in 44 minutes. It now takes about **2 per restart**. The service
+  requests this itself and logs a warning if refused.
+  - The permission cannot come from the unit file. A *user* unit cannot set
+    `AmbientCapabilities` -- systemd exits `218/CAPABILITIES` and the service
+    fails to start -- and the user's rtprio hard limit is 0, so `LimitRTPRIO=`
+    cannot raise it. It comes from
+    `/etc/security/limits.d/99-housebot-rtprio.conf` containing
+    `james - rtprio 20`, then `systemctl restart user@1000`.
+  - Check with `ps -o cls,rtprio`: healthy is `FF 10`, not `TS -`.
+- **Removed the pulse-density machinery from `poll()`** -- duty accumulator,
+  per-action enable flags, and the levels table were recomputed on every pass of
+  the hottest loop in the system while doing nothing: fractional magnitudes are
+  rejected by `require_binary_wheels` at the door. The
+  `--allow-experimental-pulse-density` flag went with them, since nothing was
+  left behind it and accepting a fractional value would now silently mean full
+  power. `poll()` is now read the scan line, drive the column while it is low,
+  release before assert.
+
+### Verified
+
+- Six paired legs, same shape and gap as the scale route, with IMU logging.
+  **Total direction reversals 42 -> 16.**
+  - `reverse` is now **clean: 0 reversals on all three legs**, and its yaw swing
+    collapsed from about +/-100 dps to +/-25.
+  - `forward` still oscillates: 4, 8, 4 reversals, with swings to -72 dps.
+
+### Open
+
+- **Why forward and not reverse.** The gating is symmetric between them -- same
+  scan slots, same two-pass ordering, mirror-image columns -- so the asymmetry
+  is not in this code. Physical drivetrain difference is the obvious candidate
+  and the project has a recorded history of suspecting the right side. Not
+  investigated.
+- Packet acknowledgement dipped again on some legs (91.7%, 96.7%, 0% on
+  tail-stop) while the service stayed up. Wi-Fi latency, not the service.
+
+### Retracted
+
+- **The open-drain optimisation does not work on this kernel** (6.18.34, lgpio
+  0.2.2), despite the note carried since 2026-08-27. `gpio_claim_output` with
+  initial level 1 is rejected outright; with level 0 it claims and `gpio_write`
+  is genuinely 6.1 us, but writing 1 **never releases the line to high
+  impedance** -- verified by reading the duplicate wire on the same net. And
+  `gpio_free` does not restore the pin, which left BCM17 driving low and BCM16
+  driving high into the remote's own scan line until it was caught and restored
+  with `pinctrl set <pin> ip pn`. **Do not retry without a scope.**
+- **The "camera contention" hypothesis is dropped.** It was never demonstrated,
+  only asserted, and it is not a basis for anything.
+
 ## 2026-08-30 - Remote latch traced to the F key; right tread moved to channel D
 
 ### Root cause

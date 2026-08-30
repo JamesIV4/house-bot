@@ -185,12 +185,10 @@ class PiMotorServiceTests(unittest.TestCase):
         gpio = self.make_gpio()
         runtime = service.MatrixMotorRuntime(gpio)
         runtime.set_wheels(1.0, 1.0)
-        runtime.duty_accumulator["right-forward"] = 0.4
         runtime.row_was_low["right-forward"] = True
 
         runtime.set_wheels(0.0, 1.0)
 
-        self.assertAlmostEqual(runtime.duty_accumulator["right-forward"], 0.4)
         self.assertTrue(runtime.row_was_low["right-forward"])
 
     def test_a_tread_that_stops_is_still_released_and_reset(self) -> None:
@@ -202,7 +200,7 @@ class PiMotorServiceTests(unittest.TestCase):
         gpio = self.make_gpio()
         runtime = service.MatrixMotorRuntime(gpio)
         runtime.set_wheels(left, right)
-        runtime.duty_accumulator[first] = 0.7
+        runtime.row_was_low[first] = True
         del gpio.setup_calls[:]
 
         runtime.set_wheels(0.0, right)
@@ -211,7 +209,7 @@ class PiMotorServiceTests(unittest.TestCase):
             (column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
             gpio.setup_calls,
         )
-        self.assertEqual(runtime.duty_accumulator[first], 0.0)
+        self.assertFalse(runtime.row_was_low[first])
         self.assertFalse(runtime.sink_active[column])
 
     def test_two_actions_sharing_one_column_do_not_cancel(self) -> None:
@@ -333,80 +331,6 @@ class PiMotorServiceTests(unittest.TestCase):
             self.assertIn(service.MATRIX_PINS[name][1], released)
         self.assertEqual(runtime.actions, ())
 
-    def test_scan_window_duty_cycle_preserves_magnitude(self) -> None:
-        class FakeGpio:
-            BCM = "BCM"
-            IN = "IN"
-            OUT = "OUT"
-            PUD_OFF = "PUD_OFF"
-            LOW = 0
-
-            def __init__(self) -> None:
-                self.levels = {pin: 1 for pair in service.MATRIX_PINS.values() for pin in pair}
-                self.setup_calls = []
-
-            def setwarnings(self, _enabled):
-                pass
-
-            def setmode(self, _mode):
-                pass
-
-            def setup(self, pin, mode, **kwargs):
-                self.setup_calls.append((pin, mode, kwargs))
-
-            def input(self, pin):
-                return self.levels[pin]
-
-            def cleanup(self, _pins):
-                pass
-
-        gpio = FakeGpio()
-        runtime = service.MatrixMotorRuntime(gpio)
-        runtime.set_wheels(0.5, 0.0)
-        row_pin, column_pin = service.MATRIX_PINS["left-forward"]
-        for _window in range(8):
-            gpio.levels[row_pin] = 0
-            runtime.poll()
-            runtime.poll()
-            gpio.levels[row_pin] = 1
-            runtime.poll()
-
-        sink_calls = [
-            call for call in gpio.setup_calls
-            if call[0] == column_pin and call[1] == gpio.OUT
-        ]
-        self.assertEqual(runtime.window_counts["left-forward"], 8)
-        self.assertEqual(len(sink_calls), 4)
-
-    def test_repeated_network_refresh_does_not_reset_duty_phase(self) -> None:
-        class PhaseOnlyGpio:
-            BCM = "BCM"
-            IN = "IN"
-            OUT = "OUT"
-            PUD_OFF = "PUD_OFF"
-            LOW = 0
-
-            def setwarnings(self, _enabled):
-                pass
-
-            def setmode(self, _mode):
-                pass
-
-            def setup(self, _pin, _mode, **_kwargs):
-                pass
-
-            def input(self, _pin):
-                return 1
-
-            def cleanup(self, _pins):
-                pass
-
-        runtime = service.MatrixMotorRuntime(PhaseOnlyGpio())
-        runtime.set_wheels(0.25, 0.0)
-        runtime.duty_accumulator["left-forward"] = 0.25
-        runtime.set_wheels(0.25, 0.0)
-        self.assertEqual(runtime.duty_accumulator["left-forward"], 0.25)
-
     def test_rebuilt_treads_can_be_inverted_without_changing_protocol(self) -> None:
         class NoopGpio:
             BCM = "BCM"
@@ -433,8 +357,7 @@ class PiMotorServiceTests(unittest.TestCase):
             runtime.set_wheels(1.0, 1.0),
             ("left-reverse", "right-reverse"),
         )
-        self.assertEqual(runtime.action_levels["left-reverse"], 1.0)
-        self.assertEqual(runtime.action_levels["right-reverse"], 1.0)
+        self.assertEqual(set(runtime.actions), {"left-reverse", "right-reverse"})
 
     def test_rebuilt_tread_channels_can_be_swapped(self) -> None:
         class NoopGpio:
