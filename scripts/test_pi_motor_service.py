@@ -27,6 +27,33 @@ service = load("pi_motor_service")
 client = load("send_motor_command")
 
 
+def paired_motion(*, shared: bool):
+    """Find a paired motion whose two actions do or do not share a column.
+
+    Which motion shares one is a property of the harness, not of the code. It
+    was the pivots (both halves on BCM22 or BCM17) until the right tread moved
+    from channel C to channel D on 2026-08-30; it is forward/reverse now. The
+    cooperation rule below is the same either way, so the tests derive the
+    motion rather than naming one.
+
+    Returns (left_wheel, right_wheel, left_action, right_action, column).
+    """
+    candidates = (
+        (1.0, 1.0, "left-forward", "right-forward"),
+        (-1.0, -1.0, "left-reverse", "right-reverse"),
+        (-1.0, 1.0, "left-reverse", "right-forward"),
+        (1.0, -1.0, "left-forward", "right-reverse"),
+    )
+    for left, right, first, second in candidates:
+        first_column = service.MATRIX_PINS[first][1]
+        second_column = service.MATRIX_PINS[second][1]
+        if (first_column == second_column) is shared:
+            return left, right, first, second, first_column
+    raise AssertionError(
+        f"no paired motion with shared={shared}; MATRIX_PINS looks wrong"
+    )
+
+
 class PiMotorServiceTests(unittest.TestCase):
     def test_command_parser_accepts_normalized_wheels(self) -> None:
         command = service.parse_command(
@@ -167,85 +194,133 @@ class PiMotorServiceTests(unittest.TestCase):
         self.assertTrue(runtime.row_was_low["right-forward"])
 
     def test_a_tread_that_stops_is_still_released_and_reset(self) -> None:
+        # Uses a motion whose two actions are on separate columns, so stopping
+        # one tread really must release its column. Where the two share a
+        # column the correct behaviour is the opposite -- see
+        # test_dropping_half_a_shared_column_motion_keeps_the_column.
+        left, right, first, _second, column = paired_motion(shared=False)
         gpio = self.make_gpio()
         runtime = service.MatrixMotorRuntime(gpio)
-        runtime.set_wheels(1.0, 1.0)
-        runtime.duty_accumulator["left-forward"] = 0.7
-        _left_row, left_column = service.MATRIX_PINS["left-forward"]
+        runtime.set_wheels(left, right)
+        runtime.duty_accumulator[first] = 0.7
         del gpio.setup_calls[:]
 
-        runtime.set_wheels(0.0, 1.0)
+        runtime.set_wheels(0.0, right)
 
         self.assertIn(
-            (left_column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
+            (column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
             gpio.setup_calls,
         )
-        self.assertEqual(runtime.duty_accumulator["left-forward"], 0.0)
-        self.assertFalse(runtime.sink_active[left_column])
+        self.assertEqual(runtime.duty_accumulator[first], 0.0)
+        self.assertFalse(runtime.sink_active[column])
 
-    def test_a_pivots_two_actions_share_one_column_without_cancelling(self) -> None:
-        """Regression: a pivot drove both its actions through ONE physical pin.
+    def test_two_actions_sharing_one_column_do_not_cancel(self) -> None:
+        """Regression: a paired motion drove both actions through ONE pin.
 
-        left pivot is left-reverse + right-forward, and both use BCM22. With
-        per-action sink state, the second action released the press the first
-        had asserted microseconds earlier in the same poll pass, producing
-        truncated presses. Those put the GT004 remote into a latched state where
-        paired commands drove only one tread, recoverable only by power-cycling
-        it -- reproduced on the remote's own buttons on 2026-08-27.
+        With per-action sink state the second action released the press the
+        first had asserted microseconds earlier in the same poll pass, giving
+        truncated presses. Those helped put the remote into a latched state
+        recoverable only by power-cycling it, reproduced on the remote's own
+        buttons on 2026-08-27.
         """
-        left_row, left_column = service.MATRIX_PINS["left-reverse"]
-        right_row, right_column = service.MATRIX_PINS["right-forward"]
-        self.assertEqual(left_column, right_column, "pivot must share one column")
+        left, right, first, second, column = paired_motion(shared=True)
+        first_row = service.MATRIX_PINS[first][0]
+        second_row = service.MATRIX_PINS[second][0]
 
         gpio = self.make_gpio()
         runtime = service.MatrixMotorRuntime(gpio)
-        runtime.set_wheels(-1.0, 1.0)
-        self.assertEqual(set(runtime.actions), {"left-reverse", "right-forward"})
+        runtime.set_wheels(left, right)
+        self.assertEqual(set(runtime.actions), {first, second})
 
-        # Row B low, row D high: the shared column must be driven low and stay
+        # First channel's scan window: the shared column must go low and stay
         # low for the whole pass, not be released again by the other action.
-        gpio.levels[left_row] = 0
-        gpio.levels[right_row] = 1
+        gpio.levels[first_row] = 0
+        gpio.levels[second_row] = 1
         del gpio.setup_calls[:]
         runtime.poll()
-        self.assertTrue(runtime.sink_active[left_column])
+        self.assertTrue(runtime.sink_active[column])
         self.assertNotIn(
-            (left_column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
+            (column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
             gpio.setup_calls,
-            "the other half of the pivot released the shared column mid-press",
+            "the other action released the shared column mid-press",
         )
 
-        # Now row D's window, row B high: still low, still uncancelled.
-        gpio.levels[left_row] = 1
-        gpio.levels[right_row] = 0
+        # Now the second channel's window: still low, still uncancelled.
+        gpio.levels[first_row] = 1
+        gpio.levels[second_row] = 0
         del gpio.setup_calls[:]
         runtime.poll()
-        self.assertTrue(runtime.sink_active[left_column])
+        self.assertTrue(runtime.sink_active[column])
         self.assertNotIn(
-            (left_column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
+            (column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
             gpio.setup_calls,
         )
 
-        # Both rows high: released exactly once.
-        gpio.levels[left_row] = 1
-        gpio.levels[right_row] = 1
+        # Neither row scanning: released exactly once.
+        gpio.levels[first_row] = 1
+        gpio.levels[second_row] = 1
         del gpio.setup_calls[:]
         runtime.poll()
-        self.assertFalse(runtime.sink_active[left_column])
+        self.assertFalse(runtime.sink_active[column])
 
-    def test_dropping_half_a_pivot_keeps_the_other_halfs_column(self) -> None:
+    def test_dropping_half_a_shared_column_motion_keeps_the_column(self) -> None:
         """Releasing one action must not release a column the other still owns."""
-        _row, shared = service.MATRIX_PINS["left-reverse"]
+        left, right, first, _second, column = paired_motion(shared=True)
         gpio = self.make_gpio()
         runtime = service.MatrixMotorRuntime(gpio)
-        runtime.set_wheels(-1.0, 1.0)
+        runtime.set_wheels(left, right)
         del gpio.setup_calls[:]
-        runtime.set_wheels(0.0, 1.0)   # drop left-reverse, keep right-forward
+        # Drop only the left action, keep the right one running.
+        runtime.set_wheels(0.0, right)
+        self.assertNotIn(first, runtime.actions)
         self.assertNotIn(
-            (shared, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
+            (column, gpio.IN, {"pull_up_down": gpio.PUD_OFF}),
             gpio.setup_calls,
-            "shared column released while right-forward still needs it",
+            "shared column released while the other action still needs it",
         )
+
+    def test_no_frame_ever_has_two_columns_low_at_once(self) -> None:
+        """Two buttons on one channel must never appear pressed together.
+
+        Each channel's two directions share its scan row, so if both columns
+        are ever low inside one scan window the remote sees forward and
+        reverse pressed at the same instant -- an input no operator can
+        produce. Applying the columns in pin order allowed exactly that for
+        the length of one setup() call, on whichever motion happened to sort
+        the wrong way. Releases must therefore precede asserts.
+        """
+        for left, right, first, second in (
+            (1.0, 1.0, "left-forward", "right-forward"),
+            (-1.0, -1.0, "left-reverse", "right-reverse"),
+            (-1.0, 1.0, "left-reverse", "right-forward"),
+            (1.0, -1.0, "left-forward", "right-reverse"),
+        ):
+            with self.subTest(motion=(left, right)):
+                rows = sorted(
+                    {service.MATRIX_PINS[first][0], service.MATRIX_PINS[second][0]}
+                )
+                gpio = self.make_gpio()
+                runtime = service.MatrixMotorRuntime(gpio)
+                runtime.set_wheels(left, right)
+
+                # Walk a whole frame: each scan row low in turn, then neither.
+                low = set()
+                for scanning in (*rows, None):
+                    for row in rows:
+                        gpio.levels[row] = 0 if row == scanning else 1
+                    del gpio.setup_calls[:]
+                    runtime.poll()
+                    for pin, mode, _kwargs in gpio.setup_calls:
+                        if mode == gpio.OUT:
+                            low.add(pin)
+                        else:
+                            low.discard(pin)
+                        self.assertLessEqual(
+                            len(low),
+                            1,
+                            f"columns {sorted(low)} both low while row "
+                            f"{scanning} is scanned",
+                        )
 
     def test_stopping_releases_every_column(self) -> None:
         gpio = self.make_gpio()

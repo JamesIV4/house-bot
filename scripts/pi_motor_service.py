@@ -182,13 +182,30 @@ class MatrixMotorRuntime:
                 self.window_enabled[name] = False
             if row_low and self.window_enabled[name]:
                 wanted[column_pin] = True
+        # Two passes: release every column that must go high BEFORE asserting
+        # any that must go low. A single pass applied them in pin order, so
+        # whether a frame was safe depended on how the pin numbers happened to
+        # sort. On the 2026-08-30 harness `reverse` sorted the wrong way: BCM17
+        # went low while BCM20 was still low, and the remote saw both
+        # directions of one channel pressed at once for the length of a
+        # setup() call -- 51 us median, 226 us max against a 225 us scan
+        # window, 25 times a second for the whole leg.
         for column_pin, want_low in wanted.items():
-            self.sink_active[column_pin] = apply_matrix_row_level(
-                self.gpio,
-                column_pin,
-                want_low,
-                self.sink_active[column_pin],
-            )
+            if not want_low:
+                self.sink_active[column_pin] = apply_matrix_row_level(
+                    self.gpio,
+                    column_pin,
+                    False,
+                    self.sink_active[column_pin],
+                )
+        for column_pin, want_low in wanted.items():
+            if want_low:
+                self.sink_active[column_pin] = apply_matrix_row_level(
+                    self.gpio,
+                    column_pin,
+                    True,
+                    self.sink_active[column_pin],
+                )
 
     def release_action(self, name: str, keep: Sequence[str] = ()) -> None:
         """Return one action's column to a high-impedance input.

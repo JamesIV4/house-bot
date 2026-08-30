@@ -1,182 +1,234 @@
 # GT004 Remote-to-Raspberry-Pi Wiring Pinout
 
-**Row/column map verified live:** 2026-08-27 by `identify-rows`  
-**Tread directions verified live:** 2026-08-27  
-**Pi:** Raspberry Pi 3B, 40-pin header  
-**Remote PCB:** `GT004TX-V01`  
+**Matrix model corrected:** 2026-08-30 — the remote is 5x2, not 2x2
+**Row/column map verified live:** 2026-08-30 by `identify-rows`
+**Tread directions verified live:** 2026-08-30 by `matrix-pulse`, on blocks
+**Pi:** Raspberry Pi 3B, 40-pin header
+**Remote PCB:** `GT004TX-V01` — Mould King 4.0 family
 **Total Pi-to-remote wires:** 9
 
 This is the authoritative pinout for the current motor-control wiring. The Pi
 does not power the remote or the motors. The remote retains its two AAA cells,
 and the original receiver/battery unit remains the motor power stage.
 
-The remote's button wires were re-soldered and the Pi header assignment moved
-on 2026-08-27, freeing BCM2/BCM3 for the MPU-6050 (`docs/IMU_WIRING.md`) and
-releasing SPI0, the serial console, and both hardware PWM channels. The
-pre-2026-08-27 mapping on BCM4-BCM11 is in git history.
+## The remote is a 5x2 matrix, not a 2x2
+
+This file described a 2x2 matrix from 2026-08-27 until 2026-08-30. That was
+wrong, and the error cost roughly a week. The four wired buttons really are a
+clean 2x2 **sub-block**, which is why every measurement of them agreed — but
+they are a sub-block of a ten-button keypad.
+
+The board carries **eight directional buttons in two four-way pads, plus two
+function keys, E and F**. The manufacturer's manual defines them:
+
+```
+A button : A channel powers motor forward and reverse
+B button : B channel powers motor forward and reverse
+C button : C channel powers motor forward and reverse
+D button : D channel powers motor forward and reverse
+E button : Merges A and B channel
+F button : Merges A and C channel
+E+F buttons : Merges A, B, and C channels
+```
+
+Its detail page settles the direction of a merge: *"merging channels A and C.
+**Press the A button**, and all PFs connected to ports A and C [run]"* —
+**channel A is always the master.**
+
+|          | direction 1        | direction 2         | port |
+| ---      | ---                | ---                 | ---  |
+| **chan A** | left pad up      | left pad down       | **left tread** |
+| **chan B** | left pad left    | left pad right      | empty |
+| **chan C** | right pad up     | right pad down      | empty |
+| **chan D** | right pad left   | right pad right     | **right tread** |
+| **func**   | E                | F                   | — |
+
+A **scan line** is private to one channel and driven by the remote's own MCU. A
+**direction line** is read by the MCU and is **shared by every button on the
+keypad, E and F included.** That distinction is the whole story below.
+
+## Why the remote kept latching, and why it no longer can
+
+The Pi cannot bridge a button's two terminals — a GPIO can only drive a level,
+not connect two pins. So the gating instead grounds a *direction* line during
+the target channel's scan window. That line is shared. It is low for every
+button on it, and only release timing keeps the press looking like one button.
+
+Hold it a few hundred microseconds too long and the scan reaches another row.
+When the treads were on channels **A and C**, one of those rows was the
+function row: the Pi ghost-pressed **F**, which merges A and C — producing
+exactly the reported fault, *"left buttons drive both treads, right buttons
+drive only the right tread."* Not corruption. F, working as designed, latched
+until the transmitter was power-cycled.
+
+No human can do this: a real button bridges one row to one column and is
+electrically inert during every other channel's turn.
+
+**The fix was to move off the channels F can reach.** No merge function touches
+channel D, and channel A only ever appears as a *master* — merging it into an
+empty port changes nothing. So with the treads on **A and D**:
+
+| Latched state | Effect |
+| --- | --- |
+| F — merges A + C | A drives the left tread and empty port C. No change. |
+| E — merges A + B | A drives the left tread and empty port B. No change. |
+| E + F | A drives the left tread and two empty ports. No change. |
+| channel D | never merged by anything; always independent. |
+
+The Pi can still ghost-press F. It has nowhere to land. See
+`docs/experiments/2026-08-27-remote-remap-and-imu.md` for the investigation.
 
 ## Electrical topology: four nets, eight wires
 
-The GT004 is a **2x2 matrix**, and the harness wires every net to the Pi
-*twice* -- once at each of the two buttons that touch it. Measured 2026-08-27
-by driving each wire low and reading the others:
+The harness wires every net to the Pi **twice**, once at each of the two
+buttons that touch it. Measured 2026-08-30 by `identify-rows`:
 
 | Net | Wires | Pi pins | Role |
 | --- | --- | --- | --- |
-| A | blue, white | BCM17, BCM26 | column |
-| B | brown, black | BCM18, BCM23 | row |
-| C | yellow, orange | BCM22, BCM16 | column |
-| D | red, purple | BCM19, BCM20 | row |
-
-|  | column net A | column net C |
-| --- | --- | --- |
-| **row net B** | left-forward | left-reverse |
-| **row net D** | right-reverse | right-forward |
+| direction 1 | blue, red | BCM17, BCM19 | steady; read by the remote |
+| direction 2 | purple, yellow | BCM20, BCM22 | steady; read by the remote |
+| chan A scan | brown, black | BCM18, BCM23 | ~225 us low every 40.16 ms |
+| chan D scan | orange, white | BCM16, BCM26 | ~225 us low every 40.16 ms |
 
 **Only one pin per net may be used.** `MATRIX_PINS` therefore uses BCM18,
-BCM19, BCM17 and BCM22, and leaves BCM23, BCM20, BCM26 and BCM16 unconfigured
-as duplicates.
+BCM16, BCM17 and BCM20, leaving BCM23, BCM26, BCM19 and BCM22 unconfigured as
+duplicates. Driving one pin of a net low and releasing the other does not
+release the net, so one intended press becomes two buttons.
 
 ## Complete connection table
 
 | Robot action / role | Wire | Pi physical pin | BCM GPIO | Net | Used |
 | --- | --- | ---: | ---: | :-: | --- |
 | Common ground | green | 14 | GND | - | PCB pad `V-` |
-| Left forward column | blue | 11 | 17 | A | yes |
-| Left forward row | brown | 12 | 18 | B | yes |
-| Left reverse column | yellow | 15 | 22 | C | yes |
-| Left reverse row | black | 16 | 23 | B | duplicate of BCM18 |
-| Right forward row | red | 35 | 19 | D | yes |
-| Right forward column | orange | 36 | 16 | C | duplicate of BCM22 |
-| Right reverse column | white | 37 | 26 | A | duplicate of BCM17 |
-| Right reverse row | purple | 38 | 20 | D | duplicate of BCM19 |
+| chan A, direction 1 | blue | 11 | 17 | dir 1 | yes |
+| chan A scan | brown | 12 | 18 | A scan | yes |
+| chan A, direction 2 | yellow | 15 | 22 | dir 2 | duplicate of BCM20 |
+| chan A scan | black | 16 | 23 | A scan | duplicate of BCM18 |
+| chan D, direction 1 | red | 35 | 19 | dir 1 | duplicate of BCM17 |
+| chan D scan | orange | 36 | 16 | D scan | yes |
+| chan D scan | white | 37 | 26 | D scan | duplicate of BCM16 |
+| chan D, direction 2 | purple | 38 | 20 | dir 2 | yes |
 
-Header layout rules: the IMU owns the top-left corner (pins 1-9 odd); each
-button's two wires land on a facing odd/even pin pair; left tread at the top of
-the header, right tread at the bottom. I2C, the serial console, SPI0, and
-PWM0/PWM1 on BCM12/BCM13 all stay free.
+Blue and brown land on the left pad's **up** button; yellow and black on the
+left pad's **down** button; red and orange on the right pad's **left** button;
+white and purple on the right pad's **right** button.
 
 Row and column do **not** follow odd/even pin position. Role is an electrical
 property of the pad a wire landed on and is measured, never inferred from
-geometry.
-
-## Use one pin per net
-
-Treating the eight wires as eight independent pins is wrong on its face: driving
-net C low through BCM22 while releasing it through BCM16 does not release the
-net. `MATRIX_PINS` therefore names one pin per net, and `identify-rows` detects
-duplicates automatically — after resolving rows and columns it drives each wire
-low, groups the wires into nets, and rewrites the printed map accordingly.
-
-**This was not, however, the cause of the drive faults it was credited with.**
-On 2026-08-27 the eight-pin map was blamed for `forward` spinning the base, for
-a single left-side press appearing to move both treads, and for variance in
-pivot rate and coast. That attribution does not survive scrutiny:
-
-- the old and new maps are *electrically identical* for exactly the commands
-  whose behaviour changed — old `right-forward` was (BCM19, BCM16), new is
-  (BCM19, BCM22), and BCM16 and BCM22 are the same net. So is `forward`, which
-  is (net B, net A) + (net D, net C) under both maps;
-- the six clean forward runs immediately after that deploy were therefore a
-  coincidence, and the improvement did not hold;
-- the symptoms all returned later the same day with the one-pin-per-net map
-  deployed.
-
-Keep one pin per net because it is correct, not because it fixes a drive fault.
-See the "Measured gating performance" section below for what the Pi side
-actually does, and `docs/experiments/2026-08-27-remote-remap-and-imu.md` for
-where the fault was eventually traced to.
+geometry — when the right side moved from channel C to channel D on
+2026-08-30, keeping the same relative leg positions, **the roles swapped
+sides**: red and purple went from scan lines to direction lines, and orange and
+white from direction lines to scan lines.
 
 ## Action-oriented mapping
 
-| Robot action | Scan row | Input column | Measured row scan | Live tread result |
-| --- | --- | --- | --- | --- |
-| Left forward | BCM18 (net B) | BCM17 (net A) | 218.5 us every 40.16 ms | left tread forward |
-| Left reverse | BCM18 (net B) | BCM22 (net C) | shared row with left-forward | left tread backward |
-| Right forward | BCM19 (net D) | BCM22 (net C) | scanned just after net B | right tread forward |
-| Right reverse | BCM19 (net D) | BCM17 (net A) | shared row with right-forward | right tread backward |
+Every intersection was pressed on its own for 0.4 s through `matrix-pulse`,
+base on blocks, with the physical result reported before the next was sent:
 
-## Measured gating performance
+| Robot action | Scan line | Direction line | Live tread result |
+| --- | --- | --- | --- |
+| Left forward | BCM18 (chan A) | BCM17 (dir 1) | left tread forward |
+| Left reverse | BCM18 (chan A) | BCM20 (dir 2) | left tread backward |
+| Right forward | BCM16 (chan D) | BCM20 (dir 2) | right tread forward |
+| Right reverse | BCM16 (chan D) | BCM17 (dir 1) | right tread backward |
 
-**Every column pin is shared by one left action and one right action.** BCM17 is
-both `left-forward` and `right-reverse`; BCM22 is both `left-reverse` and
-`right-forward`. Nothing but release timing separates them, and the timing is
-sharply asymmetric. Measured passively on the Pi, 2026-08-27, two runs 45 min
-apart agreeing to within 0.2 us:
+A clean bijection: every action moves the tread its name claims, in the
+direction its name claims. **The service runs with no inversion flags.**
+
+`identify-rows` resolves the electrical roles but cannot know which way a tread
+turns. Channel D inverted the right side relative to channel C, so the two
+right-hand labels had to be swapped after the on-blocks test. Always re-measure
+directions after a rewire; never inherit them.
+
+## Measured scan timing
+
+Measured passively on the Pi, 2026-08-30, both scan lines as high-impedance
+inputs:
 
 | Interval | Median |
 | --- | ---: |
-| row B rises -> row D falls (a left action's budget) | 216 us |
-| row D rises -> row B falls (a right action's budget) | 39 524 us |
+| chan A low window | 225.5 us |
+| chan D low window | 225.1 us |
+| chan A rises -> chan D falls | 419.1 us |
+| chan D rises -> chan A falls | 39.30 ms |
+| frame period | 40.16 ms |
 
-Row B is scanned immediately before row D, so a left-side action that released
-its column late would actuate the right-side button sharing that column, while a
-right-side action has 39 ms of slack and cannot. That asymmetry matches the
-shape of the observed faults exactly, which makes it a tempting explanation.
+Channel D sits **two scan slots** from channel A; channel C sat one, giving
+216 us. The release deadline for a consequential ghost therefore roughly
+doubled when the right tread moved.
 
-**It is not the explanation.** Measured with the duplicate harness wires used as
-probes — driving net A through BCM17 gated on row B while reading BCM26 (same
-net) and BCM20 (row D):
+> **The 39.30 ms is not slack.** It is the distance to the next scan line *the
+> harness can see*. Three unmonitored rows — channels B and C and the function
+> row — are scanned somewhere inside it. No action is safe by geometry.
 
-| Gated action | Net recovery after row rise | Ghost presses |
-| --- | ---: | ---: |
-| `left-forward` (18 -> 17) | 20.7 us median, 49.3 us max | 0 of 49 windows |
-| `right-forward` (19 -> 22) | 19.3 us median, 23.9 us max | 0 of 50 windows |
+## Measured GPIO gating performance
 
-The column is back up ~20 us after the row rises, against a 216 us budget. An
-isolated `gpio.setup()` benchmark suggests 51 us median and 163 us max, which
-would be marginal, but that overstates the cost inside the settled gating loop.
+Measured on the Pi 2026-08-29 with the production call sequence, on spare pins
+BCM12/13 under live service load, 40,000 cycles and 583,000 loop passes:
 
-An earlier note claimed a "428 us budget" with the column held 160-249 us. The
-428 us was the row-B-fall to row-D-fall spacing, which includes row B's own
-~210 us window; the real budget from row B's *rising* edge is 216 us. That
-measurement also used mock pins in a tight loop rather than real GPIO calls.
-Both figures are superseded by the table above.
+| Operation | median | p99.9 | max |
+| --- | ---: | ---: | ---: |
+| `setup(OUT)` — assert | 46.9 us | 143.5 us | 243.5 us |
+| `setup(IN)` — release | 50.9 us | 146.4 us | 225.9 us |
+| loop blind time between passes | 33.6 us | 59.9 us | 628.8 us |
 
-## Header-only quick reference
+The service is `SCHED_OTHER` at nice 0 and took **20,574 involuntary
+preemptions in 44 minutes**. There is no upper bound on how long a column stays
+low; there is only a distribution, and its tail exceeds any slot spacing here.
 
-```text
-Pi pin 14  GND     -> remote V-              (green)
-Pi pin 11  BCM17   -> net A column           (blue)     USED
-Pi pin 12  BCM18   -> net B row              (brown)    USED
-Pi pin 15  BCM22   -> net C column           (yellow)   USED
-Pi pin 35  BCM19   -> net D row              (red)      USED
-Pi pin 16  BCM23   -> net B row              (black)    duplicate
-Pi pin 36  BCM16   -> net C column           (orange)   duplicate
-Pi pin 37  BCM26   -> net A column           (white)    duplicate
-Pi pin 38  BCM20   -> net D row              (purple)   duplicate
-```
+> **Method note.** An earlier measurement — "0 ghost presses in 49 windows" —
+> was used to close this question. At roughly 1 late release in 10^4 windows,
+> 49 windows has an expected count of 0.005: seeing zero was guaranteed
+> whether or not the mechanism was real. **95% power needs about 30,000
+> windows, or 20 minutes of continuous driving.** Do not accept a two-second
+> null result about a rare event.
+
+`RPi.GPIO` on this Pi is the `rpi-lgpio` shim, so `setup()` is a kernel line
+free-and-reclaim rather than a register write, and lines are claimed
+exclusively — the motor service must be stopped before any manual GPIO work.
+`lgpio.gpio_claim_output(h, lgpio.SET_OPEN_DRAIN, pin, 0)` plus `gpio_write`
+toggles in 6.5 us without reclaiming and never drives the pin high; it remains
+an available optimisation.
 
 ## Re-identifying after a rewire
 
 ```bash
-# Nothing is driven; both wires of each pair are read as high-impedance inputs.
+# Stop the service first: lgpio claims lines exclusively.
+systemctl --user stop house-bot-motors.service
+
+# Nothing is driven except brief net-grouping pulses, so keep the
+# receiver/motor unit POWERED OFF. The remote must be ON and awake.
 python3 ~/remote_gpio_controller.py identify-rows --seconds 2
 ```
 
-Each pin is profiled for 2 s. A row shows a roughly 215 us low window every
-40 ms; a column sits steady. The command prints a ready-to-paste `MATRIX_PINS`
-and names any pair it could not resolve, rather than guessing. A pair where
-neither wire scans means dead remote cells or a broken joint; a pair where both
-scan means the two wires are on the same electrical edge of the switch.
+Each pin is profiled for 2 s. A scan line shows a roughly 225 us low window
+every 40 ms; a direction line sits steady. The command prints a ready-to-paste
+`MATRIX_PINS` and names any pair it could not resolve rather than guessing. A
+pair where neither wire scans means dead remote cells, a broken joint, or a
+sleeping remote; a pair where both scan means the two wires are on the same
+electrical edge of the switch, and that button can never be pressed.
+
+Then verify directions one at a time, base on blocks:
+
+```bash
+python3 ~/remote_gpio_controller.py matrix-pulse --row-pin 18 --column-pin 17 --duration 0.4
+```
 
 ## Tactile-switch connection rule
 
 Each button has four legs but only two electrical sides. The two legs on one
 edge are already connected internally; pressing the button connects that edge
-to the opposite edge. Each row/column pair above must therefore land on
-opposite electrical edges, not two legs on the same edge.
-
-The geometric edge chosen for row versus column depends on the soldering
-orientation. The table records the electrically verified role of each Pi wire.
+to the opposite edge. Each scan/direction pair must therefore land on opposite
+electrical edges, not two legs on the same edge.
 
 ## Power rules
 
 - Keep the remote's two AAA batteries installed.
 - **The remote sleeps after roughly 2-5 minutes idle.** Its MCU stops scanning
-  entirely and both rows go flat, so gating actuates nothing until it wakes.
-  Confirm the rows are alive before trusting any command, and treat a first
-  command after a pause as possibly lost. This is the remote, not the receiver.
+  entirely and both scan lines go flat, so gating actuates nothing until it
+  wakes. Confirm the lines are alive before trusting any command, and treat a
+  first command after a pause as possibly lost. This is the remote, not the
+  receiver.
 - Do **not** connect Pi pin 1, Pi 3.3 V, or Pi 5 V to the remote.
 - Connect only Pi ground to remote `V-`.
 - Do not connect any Pi GPIO directly to a motor lead.
@@ -184,76 +236,55 @@ orientation. The table records the electrically verified role of each Pi wire.
 
 ## Electrical behavior
 
-The remote uses a scanned button matrix. Each column is shared by two buttons in
-different rows, so holding one continuously low actuates both; the software
-instead:
+The remote uses a scanned button matrix. Each direction line is shared by
+**five** buttons in five different rows, so holding one continuously low
+actuates all five; the software instead:
 
-1. observes the selected row as a high-impedance input;
-2. waits for that row's roughly 205-233 us low scan window;
-3. pulls only the paired column low during that window;
-4. returns the column to a pull-disabled input immediately afterward.
+1. observes the target channel's scan line as a high-impedance input;
+2. waits for that line's roughly 225 us low window;
+3. pulls only the paired direction line low during that window;
+4. returns it to a pull-disabled input immediately afterward.
 
-No control path ever drives a remote wire high.
+No control path ever drives a remote wire high. Within a single poll pass,
+**every column that must go high is released before any column is asserted** —
+applying them in pin order once let both direction lines sit low inside one
+scan window, which the remote reads as both directions of a channel pressed
+at once.
 
-| Action | Median row-low width | Median scan period |
-| --- | ---: | ---: |
-| Left forward | 215.8 us | 40.15 ms |
-| Left reverse | 220.9 us | 40.13 ms |
-| Right forward | 219.4 us | 40.13 ms |
-| Right reverse | 221.1 us | 40.11 ms |
+## Receiver
+
+Four motor ports, A-D, on the rechargeable battery unit.
+
+| Port | Contents |
+| --- | --- |
+| A | **left tread** |
+| B | empty |
+| C | empty — vacated 2026-08-30 |
+| D | **right tread** |
+
+Recorded 2026-08-29. This file listed the port letters as "still unrecorded"
+from the day it was written until then; they turned out to be the fact the
+whole diagnosis rested on.
 
 ## Software locations
 
 - Verified mapping: `MATRIX_PINS` in `scripts/remote_gpio_controller.py`.
 - Persistent Pi service: `scripts/pi_motor_service.py`.
 - PC/WSL command client: `scripts/send_motor_command.py`.
+- Route driver: `scripts/drive_route.py` — drive multi-leg routes with this,
+  one process and one continuous stream, never a loop of one-shot commands.
 - Pi user service: `deploy/house-bot-motors.service`.
 - Investigation and raw measurements:
-  `docs/experiments/2026-08-19-gt004-remote-control.md`.
+  `docs/experiments/2026-08-19-gt004-remote-control.md` and
+  `docs/experiments/2026-08-27-remote-remap-and-imu.md`.
 
 The installed Pi service listens on UDP port 8765 and releases all columns if
 valid command refreshes stop for 350 ms.
 
 ## Still unrecorded
 
-The physical receiver port letters used by the left and right motors have not
-yet been identified in the repository. Record those port letters here once
-observed; they do not change the verified Pi-to-remote pinout above.
-
-## Tread-direction verification
-
-Each button was pressed on its own for 0.8 s through `matrix-pulse`, below the
-motor service so no software inversion sat in the path, and the physical result
-was observed before the next was run. All four actions moved the tread their
-name claims, in the direction their name claims.
-
-The motor service therefore runs with **no inversion flags**. The
-`--invert-left` it carried until 2026-08-27 was calibrated against the
-pre-rebuild drivetrain and is now wrong; it was removed from
-`deploy/house-bot-motors.service` when these results were recorded.
-
-### Re-verified unloaded, 2026-08-27
-
-Repeated with the base **on blocks**, treads off the ground, 0.4 s bursts, one
-at a time with the physical result reported before the next. Unloaded removes
-the confound that makes a floor test ambiguous: a pivoting base drags its
-undriven tread backwards across the floor, which looks exactly like both treads
-being driven in opposite directions.
-
-| Gated | Windows | Observed |
-| --- | ---: | --- |
-| `18:17` left-forward | 10 of ~9 | left tread forward |
-| `18:22` left-reverse | 10 | left tread backward |
-| `19:22` right-forward | 10 | right tread forward |
-| `19:17` right-reverse | 10 | right tread backward |
-| `18:17` + `19:22` FORWARD | 10 / 10 | both treads forward |
-| `18:22` + `19:22` PIVOT LEFT | 10 / 10 | counterclockwise |
-| `forward` via the UDP service | 8/8 acked | both treads forward |
-
-All correct, including the two pairs and the full service path. `PIVOT LEFT` is
-the case worth keeping: both its actions drive the **same physical pin** (BCM22)
-with independent `sink` state, so it is the only combination with a plausible
-software failure mode. It passed.
-
-The reported fault does not reproduce with the treads unloaded, which puts it
-downstream of everything documented in this file.
+- Which of the two direction lines carries **F** and which carries **E**. A
+  continuity check with the remote switched off would settle it. It no longer
+  affects correctness now that the treads are on channels A and D, but it
+  would name which pivot direction was historically the dangerous one.
+- The scan-order position of the function row within the 40.16 ms frame.

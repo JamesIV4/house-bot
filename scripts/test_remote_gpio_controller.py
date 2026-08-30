@@ -140,9 +140,9 @@ class RemoteGpioControllerTests(unittest.TestCase):
             remote.MATRIX_PINS,
             {
                 "left-forward": (18, 17),
-                "left-reverse": (18, 22),
-                "right-forward": (19, 22),
-                "right-reverse": (19, 17),
+                "left-reverse": (18, 20),
+                "right-forward": (16, 20),
+                "right-reverse": (16, 17),
             },
         )
         self.assertEqual(
@@ -182,10 +182,19 @@ class RemoteGpioControllerTests(unittest.TestCase):
 
     def test_each_wheel_direction_sits_at_its_own_intersection(self) -> None:
         pins = remote.MATRIX_PINS
+        # A tread's two directions share its channel's own scan row.
         self.assertEqual(pins["left-forward"][0], pins["left-reverse"][0])
         self.assertEqual(pins["right-forward"][0], pins["right-reverse"][0])
-        self.assertEqual(pins["left-forward"][1], pins["right-reverse"][1])
-        self.assertEqual(pins["left-reverse"][1], pins["right-forward"][1])
+        # The treads are on different channels of the remote.
+        self.assertNotEqual(pins["left-forward"][0], pins["right-forward"][0])
+        # Each tread uses both direction lines, one per direction. Which line
+        # carries a given tread's "forward" depends on how that motor is geared
+        # and is measured, never assumed: left-forward shared a line with
+        # right-REVERSE until the right tread moved from channel C to channel D
+        # on 2026-08-30, and shares one with right-FORWARD now.
+        for side in ("left", "right"):
+            self.assertNotEqual(pins[f"{side}-forward"][1], pins[f"{side}-reverse"][1])
+        self.assertEqual(len(set(pins.values())), 4)
 
     def test_matrix_actions_reject_opposed_wheel_commands(self) -> None:
         with self.assertRaisesRegex(ValueError, "left wheel"):
@@ -332,7 +341,10 @@ class SharedNetTests(unittest.TestCase):
     """
 
     # Measured on the GT004 harness, 2026-08-27.
-    REAL_NETS = {17: [26], 26: [17], 18: [23], 23: [18], 22: [16], 16: [22], 19: [20], 20: [19]}
+    # Measured by identify-rows 2026-08-30, after the right tread moved from
+    # channel C to channel D. Direction lines are 17+19 and 20+22; the scan
+    # lines are 18+23 (channel A) and 16+26 (channel D).
+    REAL_NETS = {17: [19], 19: [17], 20: [22], 22: [20], 18: [23], 23: [18], 16: [26], 26: [16]}
 
     def fake_driver(self, nets: dict[int, list[int]]):
         def drive(pin: int, others):
@@ -345,10 +357,10 @@ class SharedNetTests(unittest.TestCase):
         nets = remote.detect_shared_nets(pins, self.fake_driver(self.REAL_NETS))
         groups = remote.net_groups(nets)
         self.assertEqual(len(groups), 4)
-        self.assertIn((17, 26), groups)
+        self.assertIn((17, 19), groups)
+        self.assertIn((20, 22), groups)
         self.assertIn((18, 23), groups)
-        self.assertIn((16, 22), groups)
-        self.assertIn((19, 20), groups)
+        self.assertIn((16, 26), groups)
 
     def test_independent_wires_are_left_alone(self) -> None:
         pins = [4, 5, 6, 7]
@@ -360,11 +372,16 @@ class SharedNetTests(unittest.TestCase):
 
     def test_duplicates_are_rewritten_to_one_pin_per_net(self) -> None:
         """Which pin represents a net is arbitrary; the net it names is not."""
+        # The four physical button pairs, each named by the wire that landed on
+        # it, and each naming its net through the other of the two pins. The
+        # direction labels are the ones verified on blocks, not the ones
+        # identify-rows prints: identify-rows resolves the electrical roles but
+        # cannot know which way a tread turns.
         resolved = {
             "left-forward": (18, 17),
             "left-reverse": (23, 22),
-            "right-forward": (19, 16),
-            "right-reverse": (20, 26),
+            "right-forward": (26, 20),
+            "right-reverse": (16, 19),
         }
         groups = remote.net_groups(
             remote.detect_shared_nets(sorted(self.REAL_NETS), self.fake_driver(self.REAL_NETS))

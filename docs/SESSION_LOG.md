@@ -3,6 +3,82 @@
 Keep entries concise and evidence based. Link detailed experiment records when
 they exist.
 
+## 2026-08-30 - Remote latch traced to the F key; right tread moved to channel D
+
+### Root cause
+
+- The remote is a **5x2 matrix, not the 2x2** this project assumed: ten buttons,
+  being two four-way pads (four motor channels) plus the **E and F function
+  keys**. Confirmed against the manufacturer's manual, which states *"E button :
+  Merges A and B channel. F button : Merges A and C channel"*, and that channel
+  **A is always the merge master**.
+- The treads were on receiver ports **A and C**. F merges A and C, which is
+  exactly the reported fault: *left buttons drive both treads, right buttons
+  drive only the right tread*. Not corruption -- F, working as designed, latched
+  until the transmitter was power-cycled.
+- The Pi presses buttons by grounding a **direction line**, which is shared by
+  every button on the keypad including E and F. Only release timing keeps the
+  press looking like one button. A finger bridges one contact and is inert
+  during every other channel's scan turn, which is why no human input could
+  ever reproduce this.
+- Credit: Codex "Daybreak Blue" identified the hidden channel-merge mechanism
+  and the submatrix framing before any of the measurements below.
+
+### Changed
+
+- **Right tread moved from receiver port C to port D**, and its Pi wires from
+  the right pad's up/down buttons to its left/right buttons. No merge function
+  touches channel D, and channel A is only ever a master -- so F, E and E+F now
+  merge the left tread into empty ports and **every latched state is a no-op**.
+  The Pi can still ghost-press F; it has nowhere to land.
+- `poll()` now releases every column that must go high **before** asserting any
+  that must go low. A single pass applied them in pin order, so whether a frame
+  was safe depended on how pin numbers happened to sort; on this harness
+  `reverse` sorted the wrong way and the remote saw both directions of one
+  channel pressed at once for the length of a `setup()` call, 25 times a second
+  for the whole leg. Regression test verified against the old code.
+- `MATRIX_PINS` re-measured and corrected. `docs/REMOTE_WIRING_PINOUT.md`
+  rewritten for the 5x2 model.
+
+### Verified
+
+- `identify-rows` resolved all four pairs cleanly; the harness still collapses
+  to four nets across eight wires. **The scan/direction roles swapped sides**
+  when the right tread moved, despite the leg positions being kept the same --
+  role is electrical, never geometric.
+- All four intersections re-tested singly through `matrix-pulse`, base on
+  blocks, physical result reported before the next. Clean bijection, no
+  inversion flags. The right side's two direction labels had to be swapped.
+- Scan timing: channel A and D windows both ~225 us; **A rises -> D falls
+  419 us** (channel C sat one slot away at 216 us); frame 40.16 ms.
+- **Gaps between route legs are not needed.** A 30-leg stress route -- 24
+  pivots, the pattern that historically broke it fastest -- ran twice: once at
+  a 0.4 s cadence, then with **zero gaps**, 14.3 s of unbroken motion with a
+  direct reversal at every leg boundary and no stop in between. Both were
+  followed by a four-leg single-tread probe. **No latch either time**, and no
+  misbehaviour observed. 100% packet acknowledgement on all 30 legs of both
+  runs.
+
+### Caveats
+
+- One clean run is weak evidence on its own. The historical latch rate was
+  roughly one per few minutes of driving, so 14 s proves little by itself; the
+  reason to trust the fix is the channel move, not this run.
+- The no-gap probe lost acks on its last two legs (66.7%, then 0% on
+  tail-stop). The service was **active with 0 restarts**, `throttled=0x0`, and
+  the Wi-Fi interface showed zero errors and zero drops -- ping measured 0%
+  loss but latency spikes to 235 ms against a 19 ms average. Transient Wi-Fi
+  latency, not the service. Lost acknowledgements are not lost commands, and
+  the 350 ms watchdog covers a genuinely missed stop.
+- **The service's stdout is not being captured** -- `journalctl --user` reports
+  no journal files, so watchdog messages are invisible. Worth fixing before
+  relying on the log for evidence.
+- Gaps still matter for a separate, unchanged reason: the receiver sleeps after
+  roughly 5 s idle and drops the opening of the next command. That is about
+  priming, not about protecting the remote.
+- Still unrecorded: which direction line carries F and which carries E, and
+  where the function row sits in the scan order.
+
 ## 2026-08-23 - Motor base rebuilt to front-drive; inputs remapped
 
 ### Changed

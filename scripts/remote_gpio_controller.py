@@ -36,41 +36,61 @@ MOTIONS = {
     "right": ("left-forward", "right-reverse"),
 }
 
-# The GT004 is a 2x2 matrix and the harness wires every net to the Pi TWICE,
-# once at each button that touches it. Measured 2026-08-27 by driving each wire
-# low and reading the others:
+# The remote is a 5x2 matrix, not the 2x2 this file assumed until 2026-08-30.
+# It has ten buttons: two four-way pads carrying four motor channels, plus the
+# E and F function keys. A SCAN line is private to one channel; a DIRECTION line
+# is shared by every button on the keypad, function keys included. The harness
+# wires every net to the Pi twice, once at each button touching it.
 #
-#   net A = BCM17 (blue)   == BCM26 (white)    column
-#   net B = BCM18 (brown)  == BCM23 (black)    row
-#   net C = BCM22 (yellow) == BCM16 (orange)   column
-#   net D = BCM19 (red)    == BCM20 (purple)   row
+#            direction 1         direction 2
+#   chan A   left pad up         left pad down      <- left tread   (wired)
+#   chan B   left pad left       left pad right     <- port empty
+#   chan C   right pad up        right pad down     <- port empty
+#   chan D   right pad left      right pad right    <- right tread  (wired)
+#   func     E                   F                  <- never wired
 #
-#              col net A        col net C
-#   row net B  left-forward     left-reverse
-#   row net D  right-reverse    right-forward
+# F merges channels A and C; E merges A and B; A is always the master. Holding
+# a direction line low past its channel's scan window presses whatever sits on
+# the next row -- which is how the Pi kept ghost-pressing F and latching the
+# remote into "left tread drives both". The treads therefore run on channels
+# A and D: no merge function touches D, and A is only ever a merge master, so
+# every latched state is now a no-op. See docs/REMOTE_WIRING_PINOUT.md.
 #
-# Only one pin per net may be used. Treating the eight wires as eight
-# independent pins meant driving and releasing the same net through two
-# different pins: releasing BCM16 does nothing while BCM22 still holds net C
-# low, so one intended press became two buttons. Single actions were unaffected
-# because they only ever touch one pin per net, which is why every action
-# verified correctly on its own and only pairs misbehaved.
+# Measured by identify-rows 2026-08-30, after moving the right tread from
+# channel C to channel D:
 #
-# BCM23, BCM20, BCM16 and BCM26 are deliberately unused: they are duplicates of
-# BCM18, BCM19, BCM22 and BCM17 respectively.
+#   direction 1 = BCM17 (blue)   == BCM19 (red)      steady
+#   direction 2 = BCM22 (yellow) == BCM20 (purple)   steady
+#   chan A scan = BCM18 (brown)  == BCM23 (black)    ~225 us every 40.16 ms
+#   chan D scan = BCM16 (orange) == BCM26 (white)    ~225 us every 40.16 ms
+#
+# Only one pin per net may be used: driving one and releasing the other does
+# not release the net, so a command pressing two buttons actuates a third.
+# BCM19, BCM20, BCM23 and BCM26 are deliberately unused duplicates.
+# Every intersection below was pressed on its own for 0.4 s through
+# matrix-pulse on 2026-08-30, base on blocks, physical result reported before
+# the next was sent. identify-rows resolves the electrical roles but cannot
+# know which way a tread turns, and channel D inverted the right side relative
+# to channel C, so these four labels are measured rather than inherited:
+#
+#   BCM18 / BCM17 -> left tread forward     BCM16 / BCM20 -> right tread forward
+#   BCM18 / BCM20 -> left tread backward    BCM16 / BCM17 -> right tread backward
+#
+# A clean bijection: every action moves the tread its name claims, in the
+# direction its name claims, so the service runs with no inversion flags.
 MATRIX_PINS = {
     "left-forward": (18, 17),
-    "left-reverse": (18, 22),
-    "right-forward": (19, 22),
-    "right-reverse": (19, 17),
+    "left-reverse": (18, 20),
+    "right-forward": (16, 20),
+    "right-reverse": (16, 17),
 }
 
 # Both wires of each net, for documentation and for identify-rows.
 MATRIX_NETS = {
-    "A-column": (17, 26),
-    "B-row": (18, 23),
-    "C-column": (22, 16),
-    "D-row": (19, 20),
+    "direction-1": (17, 19),
+    "direction-2": (20, 22),
+    "chanA-scan": (18, 23),
+    "chanD-scan": (16, 26),
 }
 
 MATRIX_MOTIONS = {
